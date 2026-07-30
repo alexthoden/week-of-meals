@@ -9,7 +9,7 @@ const DATA_FILE = process.env.DATA_FILE || path.join(__dirname, '..', 'data', 'd
 const RECIPES = [
   {
     title: 'Sheet Pan Chicken and Potatoes',
-    time: '50 min', servings: '4 servings', tags: ['weeknight', 'one pan'],
+    time: '50 min', servings: '4 servings', tags: ['weeknight', 'one pan'], category: 'dinner',
     ingredients: [
       '2 lb bone-in chicken thighs',
       '1.5 lb baby potatoes, halved',
@@ -30,7 +30,7 @@ const RECIPES = [
   },
   {
     title: 'Weeknight Beef Chili',
-    time: '45 min', servings: '6 servings', tags: ['make ahead', 'freezes well'],
+    time: '45 min', servings: '6 servings', tags: ['make ahead', 'freezes well'], category: 'dinner',
     ingredients: [
       '1 lb ground beef',
       '1 large yellow onion, diced',
@@ -53,7 +53,7 @@ const RECIPES = [
   },
   {
     title: 'Garlic Butter Shrimp Pasta',
-    time: '25 min', servings: '4 servings', tags: ['fast', 'kid approved'],
+    time: '25 min', servings: '4 servings', tags: ['fast', 'kid approved'], category: 'dinner',
     ingredients: [
       '1 lb linguine',
       '1 lb large shrimp, peeled and deveined',
@@ -76,7 +76,7 @@ const RECIPES = [
   },
   {
     title: 'Black Bean and Sweet Potato Tacos',
-    time: '35 min', servings: '4 servings', tags: ['vegetarian', 'weeknight'],
+    time: '35 min', servings: '4 servings', tags: ['vegetarian', 'weeknight'], category: 'dinner',
     ingredients: [
       '2 medium sweet potatoes, cut into 1/2 inch cubes',
       '1 can (15 oz) black beans, drained and rinsed',
@@ -99,7 +99,7 @@ const RECIPES = [
   },
   {
     title: 'Chicken Stir Fry with Broccoli',
-    time: '30 min', servings: '4 servings', tags: ['fast', 'one pan'],
+    time: '30 min', servings: '4 servings', tags: ['fast', 'one pan'], category: 'dinner',
     ingredients: [
       '1.5 lb boneless skinless chicken thighs, sliced thin',
       '1 large head broccoli, cut into florets',
@@ -123,7 +123,7 @@ const RECIPES = [
   },
   {
     title: 'Baked Ziti',
-    time: '1 hr', servings: '8 servings', tags: ['make ahead', 'crowd'],
+    time: '1 hr', servings: '8 servings', tags: ['make ahead', 'crowd'], category: 'dinner',
     ingredients: [
       '1 lb ziti',
       '1 lb Italian sausage, casings removed',
@@ -146,7 +146,7 @@ const RECIPES = [
   },
   {
     title: 'Greek Salad with Grilled Chicken',
-    time: '25 min', servings: '4 servings', tags: ['light', 'fast'],
+    time: '25 min', servings: '4 servings', tags: ['light', 'fast'], category: 'lunch',
     ingredients: [
       '1.5 lb boneless skinless chicken breasts',
       '1 English cucumber, chopped',
@@ -170,7 +170,7 @@ const RECIPES = [
   },
   {
     title: 'Creamy Tomato Soup and Grilled Cheese',
-    time: '40 min', servings: '4 servings', tags: ['comfort', 'kid approved'],
+    time: '40 min', servings: '4 servings', tags: ['comfort', 'kid approved'], category: 'lunch',
     ingredients: [
       '2 cans (28 oz each) whole peeled tomatoes',
       '1 medium yellow onion, chopped',
@@ -192,7 +192,7 @@ const RECIPES = [
   },
   {
     title: 'Honey Garlic Salmon',
-    time: '20 min', servings: '4 servings', tags: ['fast', 'light'],
+    time: '20 min', servings: '4 servings', tags: ['fast', 'light'], category: 'dinner',
     ingredients: [
       '4 salmon fillets (6 oz each)',
       '3 tbsp honey',
@@ -213,7 +213,7 @@ const RECIPES = [
   },
   {
     title: 'Breakfast for Dinner Pancakes',
-    time: '30 min', servings: '4 servings', tags: ['kid approved', 'breakfast'],
+    time: '30 min', servings: '4 servings', tags: ['kid approved', 'breakfast'], category: 'breakfast',
     ingredients: [
       '2 cups all-purpose flour',
       '2 tbsp sugar',

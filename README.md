@@ -46,8 +46,12 @@ npm test                  # unit tests for the ingredient logic
 
 Three tabs, which is the whole app:
 
-**Recipes** — the directory. Search, filter by tag, tap through to the full
-recipe. Cards show the dish; recipes without a photo fall back to a monogram.
+**Recipes** — the directory, and it browses like one. The top level is shelves
+— Breakfast, Dinner, Dessert — each showing a peek at what is on it. Open one to
+get its recipes; the breadcrumb takes you back. Search cuts straight through the
+hierarchy, because when you are looking for a name you should not have to
+remember which shelf you filed it on. Within a shelf you can still filter by
+tag. Cards show the dish; recipes without a photo fall back to a monogram.
 Add one by typing it in, or paste a link and let it pull the recipe down.
 
 **Cook** — open any recipe and press *Cook this*. Full screen, big type,
@@ -99,6 +103,27 @@ Import is best-effort by design. Some sites sit behind bot protection and will
 refuse; when that happens you get a plain sentence saying so, and the paste box
 is right underneath. Always give an imported recipe a glance before saving — it
 lands in the form, not straight in your library.
+
+### Categories, and why they are not tags
+
+A recipe has many tags and exactly one category. That is the whole distinction,
+and it is what makes the folder view possible: tags are adjectives you pile on
+("fast", "one pan", "kid approved") and a recipe wears as many as fit, while a
+category is the single shelf it lives on. Because every recipe is in exactly one
+place, the shelves add up to the whole collection with nothing double-counted
+and nothing missing — which is the property a directory needs and a tag cloud
+can never have.
+
+Seven are offered — breakfast, lunch, dinner, dessert, snack, side, drink — but
+the field is free text, so if you want a Baking shelf you type it and get one.
+
+Recipes written before categories existed have no category field. Rather than
+tipping all of them into "Uncategorized", the shelf is read off the tags first:
+a recipe already tagged `breakfast` plainly is one. This is a **read-time
+default, not a migration** — nothing is rewritten on disk until you next save
+that recipe, so the guess is never destructive and never has to be undone. Open
+a recipe's edit form and the guess is sitting in the field, ready to be
+confirmed or corrected.
 
 ### The pantry
 
@@ -318,6 +343,7 @@ server/
     parse.js            one ingredient line -> quantity, unit, item, note
     consolidate.js      a week of meals -> one shopping list
     store.js            the JSON file, written atomically
+    categories.js       which shelf a recipe lives on
     anylist.js          AnyList session, dedupe, error handling
     import.js           pull a recipe off a web page
     images.js           copy photos in, serve them, tidy up after

@@ -24,6 +24,9 @@ const state = {
   list: null,
   search: '',
   tag: null,
+  /* Which category folder is open. null is the top level, where the folders
+     themselves are what you see. '*' is "All recipes" — one flat grid. */
+  category: null,
 };
 
 /* ------------------------------------------------------------- utils -- */
@@ -158,25 +161,57 @@ async function refresh({ list = true } = {}) {
 
 /* ------------------------------------------------------ view: recipes -- */
 
+/**
+ * The recipes tab is a two-level browser, not one long grid.
+ *
+ * Level one is the shelves — Dinner, Dessert, Side — because forty recipes in a
+ * single scroll is a pile, and "what are we having for pudding" is a question
+ * about one shelf. Level two is the recipes on the shelf you opened.
+ *
+ * Search escapes the hierarchy rather than filtering inside it: when you are
+ * looking for a name you do not want to remember which shelf you filed it on.
+ * Typing at the top level searches everything; typing inside a folder searches
+ * that folder, and says so.
+ */
 function renderRecipes() {
   const all = state.boot.recipes;
-  const tags = [...new Set(all.flatMap((r) => r.tags))].sort();
   const q = state.search.trim().toLowerCase();
+  const open = state.category;
 
-  const shown = all.filter((r) => {
-    if (state.tag && !r.tags.includes(state.tag)) return false;
-    if (!q) return true;
-    return r.title.toLowerCase().includes(q) || r.tags.some((t) => t.includes(q));
-  });
-
-  return `
+  const head = `
     <div class="section-head">
       <p class="eyebrow">${all.length} recipe${all.length === 1 ? '' : 's'}</p>
       <button class="btn primary" data-act="new-recipe">Add a recipe</button>
     </div>
 
-    <input class="search" id="search" type="search" placeholder="Search recipes"
-           value="${esc(state.search)}" autocomplete="off">
+    <input class="search" id="search" type="search"
+           placeholder="${open && open !== '*' ? `Search ${esc(labelOfCategory(open))}` : 'Search recipes'}"
+           value="${esc(state.search)}" autocomplete="off">`;
+
+  // The top level, at rest: folders only.
+  if (!open && !q) return `${head}${renderCategoryIndex(all)}`;
+
+  const inFolder = open && open !== '*' ? all.filter((r) => r.category === open) : all;
+  const tags = [...new Set(inFolder.flatMap((r) => r.tags))].sort();
+
+  const shown = inFolder.filter((r) => {
+    if (state.tag && !r.tags.includes(state.tag)) return false;
+    if (!q) return true;
+    return r.title.toLowerCase().includes(q) || r.tags.some((t) => t.includes(q));
+  });
+
+  const crumb = `
+    <nav class="crumbs">
+      <button class="crumb" data-act="close-category">All recipes</button>
+      ${open && open !== '*'
+    ? `<span class="crumb-sep">/</span><span class="crumb here">${esc(labelOfCategory(open))}</span>`
+    : ''}
+      ${q ? `<span class="crumb-count">${shown.length} match${shown.length === 1 ? '' : 'es'}</span>` : ''}
+    </nav>`;
+
+  return `
+    ${head}
+    ${crumb}
 
     ${tags.length ? `<div class="tagrow" style="margin-bottom:16px">
       ${tags.map((t) => `<button class="tag on-dark" data-act="tag" data-tag="${esc(t)}"
@@ -201,6 +236,60 @@ function renderRecipes() {
       </div>`}
   `;
 }
+
+/** Display name for a category key, using whatever the server called it. */
+function labelOfCategory(key) {
+  const known = (state.boot.categories || []).find((c) => c.key === key);
+  if (known) return known.label;
+  return String(key).replace(/(^|\s)\S/g, (c) => c.toUpperCase());
+}
+
+/**
+ * The shelves themselves: one tile each, plus a way to see the lot.
+ *
+ * Each tile shows the first few recipes on that shelf rather than just a count.
+ * A row of bare labels told you nothing you could not guess, and on a wide
+ * screen it left the window almost empty — which is the opposite of what this
+ * page is for. The peek makes the tile worth its space and makes the shelf
+ * recognisable before you open it.
+ */
+function renderCategoryIndex(all) {
+  const folders = state.boot.categories || [];
+
+  if (!all.length) {
+    return `<div class="empty">
+      <strong>No recipes yet</strong>
+      <p>Paste one in, or import it from a link.</p>
+      <button class="btn primary" data-act="new-recipe">Add a recipe</button>
+    </div>`;
+  }
+
+  const tile = (key, label, count, members) => `
+    <button class="folder" data-act="open-category" data-category="${esc(key)}">
+      <span class="folder-peek">
+        ${members.slice(0, 3).map((r) => `<span class="peek">${r.image
+    ? `<img src="${esc(r.image)}" alt="" loading="lazy" onerror="this.parentNode.classList.add('blank')">`
+    : ''}<em>${esc(initials(r.title))}</em></span>`).join('')}
+        ${count > 3 ? `<span class="peek more">+${count - 3}</span>` : ''}
+      </span>
+      <span class="folder-head">
+        ${FOLDER_ICON}
+        <span class="folder-name">${esc(label)}</span>
+        <span class="folder-count">${count}</span>
+      </span>
+    </button>`;
+
+  return `
+    <div class="folder-grid">
+      ${tile('*', 'All recipes', all.length, all)}
+      ${folders.map((c) => tile(
+    c.key, c.label, c.count, all.filter((r) => r.category === c.key),
+  )).join('')}
+    </div>`;
+}
+
+const FOLDER_ICON = '<svg class="folder-icon" viewBox="0 0 24 24" aria-hidden="true">'
+  + '<path d="M3 7a2 2 0 0 1 2-2h4l2 2.5h8a2 2 0 0 1 2 2V17a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7Z"/></svg>';
 
 /* --------------------------------------------------------- view: week -- */
 
@@ -342,6 +431,18 @@ function render() {
   document.querySelectorAll('.tab').forEach((t) => {
     t.setAttribute('aria-selected', t.dataset.tab === state.tab);
   });
+
+  // Deleting or re-filing the last recipe on a shelf takes the shelf with it.
+  // Without this you are left standing in a folder that no longer exists.
+  if (state.category && state.category !== '*'
+      && !(state.boot.categories || []).some((c) => c.key === state.category)) {
+    state.category = null;
+  }
+
+  // The recipes tab is a grid and wants the whole window; the week and the
+  // shopping list are columns and want to stay a column. CSS reads this.
+  document.body.dataset.tab = state.tab;
+
   view.innerHTML = state.tab === 'recipes' ? renderRecipes()
     : state.tab === 'list' ? renderList() : renderWeek();
 
@@ -405,7 +506,19 @@ function fmt(n) {
 }
 
 function recipeForm(recipe) {
-  const r = recipe || { title: '', ingredients: [], steps: [], tags: [], time: '', servings: '', source: '', notes: '' };
+  // A new recipe starts on the dinner shelf: this is a dinner-first planner,
+  // and a blank category would file every new recipe under "Uncategorized",
+  // which is the one shelf nobody browses on purpose.
+  const r = recipe || {
+    title: '', ingredients: [], steps: [], tags: [], time: '', servings: '',
+    source: '', notes: '', category: 'dinner',
+  };
+
+  // The canonical shelves, plus any you have invented, minus the placeholder.
+  const choices = [...new Set([
+    ...(state.boot.categoryChoices || []),
+    ...(state.boot.categories || []).map((c) => c.key),
+  ])].filter((c) => c !== 'uncategorized');
   return `
     <h2>${recipe ? 'Edit recipe' : 'Add a recipe'}</h2>
     <p class="sub">One ingredient per line, the way it reads in the recipe.</p>
@@ -450,6 +563,14 @@ function recipeForm(recipe) {
       <label class="field"><span>Time</span><input id="f-time" value="${esc(r.time)}" placeholder="45 min"></label>
       <label class="field"><span>Serves</span><input id="f-servings" value="${esc(r.servings)}" placeholder="4"></label>
     </div>
+
+    <label class="field"><span>Category</span>
+      <input id="f-category" list="category-choices" value="${esc(r.category || '')}"
+             placeholder="dinner" autocomplete="off">
+      <datalist id="category-choices">
+        ${choices.map((c) => `<option value="${esc(c)}">`).join('')}
+      </datalist>
+      <p class="hint">The shelf it lives on. Pick one of these or type your own.</p></label>
 
     <label class="field"><span>Tags</span>
       <input id="f-tags" value="${esc((r.tags || []).join(', '))}" placeholder="weeknight, kid approved"></label>
@@ -576,6 +697,22 @@ const actions = {
     render();
   },
 
+  async 'open-category'(el) {
+    state.category = el.dataset.category;
+    // A tag chosen on one shelf means nothing on the next one.
+    state.tag = null;
+    render();
+  },
+
+  async 'close-category'() {
+    state.category = null;
+    state.tag = null;
+    // Otherwise "All recipes" lands on a still-filtered grid, which reads as
+    // the breadcrumb having done nothing.
+    state.search = '';
+    render();
+  },
+
   async 'open-recipe'(el) { await showRecipe(el.dataset.id); },
 
   async 'new-recipe'() { openSheet(recipeForm(null)); },
@@ -613,6 +750,7 @@ const actions = {
       steps: $('#f-steps').value,
       time: $('#f-time').value,
       servings: $('#f-servings').value,
+      category: $('#f-category').value,
       tags: $('#f-tags').value,
       image: $('#f-image').value,
     };

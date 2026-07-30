@@ -100,6 +100,31 @@ test('no stylesheet rule hides the main view or navigation', () => {
   assert.notEqual(style.visibility, 'hidden');
 });
 
+test('the monogram fallback is not hidden behind its own container', () => {
+  /*
+   * A recipe with no photo shows its initials instead. That monogram is a later
+   * sibling of the <img>, so it needs to sit underneath — and the obvious way to
+   * write that, `z-index: -1`, is wrong here.
+   *
+   * A negative z-index puts an element behind the nearest ancestor that
+   * establishes a stacking context. `.thumb` is only `position: relative`, which
+   * is not enough to establish one, so the monogram went behind `.thumb`'s own
+   * background and vanished. Every photo-less recipe rendered a dead grey
+   * rectangle, and the folder tiles inherited it.
+   *
+   * The fix lifts the photo (`z-index: 1`) instead of sinking the monogram, so
+   * this asserts the monogram rules carry no negative index.
+   */
+  const monogramRules = (css.match(/\.(?:recipe-card \.thumb|peek) em\s*\{[^}]*\}/g) || []);
+  assert.ok(monogramRules.length >= 2,
+    'expected monogram rules for both the recipe cards and the folder tiles');
+
+  for (const rule of monogramRules) {
+    assert.doesNotMatch(rule, /z-index:\s*-/,
+      `a negative z-index hides this monogram behind its own container: ${rule.slice(0, 60)}…`);
+  }
+});
+
 test('index.html references only local assets for app code and styling', () => {
   // A blocked third-party stylesheet must never be able to break layout, and a
   // blocked script must never be able to stop the app booting.

@@ -9,6 +9,7 @@ const storage = require('./lib/storage');
 const auth = require('./lib/auth');
 const { consolidate, AISLE_ORDER } = require('./lib/consolidate');
 const { parseIngredient } = require('./lib/parse');
+const categories = require('./lib/categories');
 const anylist = require('./lib/anylist');
 const { importFromUrl } = require('./lib/import');
 
@@ -137,8 +138,13 @@ app.get('/api/bootstrap', wrap(async (req, res) => {
       id: r.id, title: r.title, tags: r.tags || [], time: r.time || '',
       servings: r.servings || '', source: r.source || '',
       image: r.image || '',
+      category: categories.categoryOf(r),
       ingredientCount: (r.ingredients || []).length,
     })),
+    // The shelves that actually hold something, plus the ones we always offer,
+    // so the folder view can stand a recipe up in an empty category too.
+    categories: categories.summarize(store.data.recipes),
+    categoryChoices: categories.CATEGORIES,
     plan: Object.fromEntries(dates.map((d) => [d, (store.data.plan[d] || []).map((m) => ({
       ...m, title: recipeById(m.recipeId)?.title || 'Deleted recipe',
     }))])),
@@ -152,6 +158,9 @@ app.get('/api/recipes/:id', wrap(async (req, res) => {
   if (!recipe) return res.status(404).json({ error: 'That recipe is gone.' });
   res.json({
     ...recipe,
+    // Resolved, not raw: an older recipe with no category still opens its edit
+    // form on the right shelf, and saving makes that guess permanent.
+    category: categories.categoryOf(recipe),
     parsed: (recipe.ingredients || []).map(parseIngredient).filter(Boolean),
   });
 }));
@@ -166,6 +175,7 @@ function cleanRecipe(body) {
     time: String(body.time || '').trim(),
     tags: (Array.isArray(body.tags) ? body.tags : String(body.tags || '').split(','))
       .map((t) => String(t).trim().toLowerCase()).filter(Boolean),
+    category: categories.normalizeCategory(body.category),
     ingredients: lines(body.ingredients),
     steps: lines(body.steps),
     notes: String(body.notes || '').trim(),
