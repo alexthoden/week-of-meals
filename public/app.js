@@ -169,7 +169,7 @@ async function api(path, options = {}) {
     try { alreadyTried = sessionStorage.getItem(KEY) === '1'; } catch { /* private mode */ }
 
     if (alreadyTried) {
-      renderSignInStalled();
+      renderSignInStalled(data);
       throw handled(data.error || 'Sign-in expired.');
     }
 
@@ -564,21 +564,60 @@ function renderNoHousehold() {
   document.querySelectorAll('.tab').forEach((t) => { t.disabled = true; });
 }
 
-/**
- * The reload did not fix it, so stop reloading and say so.
+/*
+ * Why a sign-in was refused, in words, per code from the server.
  *
- * Almost always a cached copy of the page: the browser is running app.js from
- * a cache, so a reload is answered locally and never bounces through Access to
- * pick up a cookie. Both buttons therefore have to defeat a cache rather than
- * just try again, which is the thing an ordinary reload cannot do.
+ * The server distinguishes a dozen causes and says which; the first version of
+ * this screen threw that away and asserted "probably a cache" instead. When the
+ * cause was something else entirely — a mismatched application id, a clock, an
+ * origin that cannot reach Cloudflare — the screen confidently described the
+ * wrong problem and there was no way to find the right one from the browser.
+ * Never discard a specific diagnosis in favour of a guess.
  */
-function renderSignInStalled() {
+const AUTH_CAUSES = {
+  NO_TOKEN: 'The browser sent no Cloudflare Access sign-in at all. Either the page '
+    + 'was served from a cache without going through Access, or the CF_Authorization '
+    + 'cookie is missing for this hostname.',
+  BAD_AUD: 'The sign-in is valid, but it was issued for a different Access '
+    + 'application. CF_ACCESS_AUD on the server does not match the Application '
+    + 'Audience tag of the Access app in front of it.',
+  BAD_ISS: 'The sign-in came from a different Cloudflare team than CF_ACCESS_TEAM '
+    + 'on the server.',
+  BAD_KID: 'The sign-in was not signed by a key this team publishes — again usually '
+    + 'CF_ACCESS_TEAM pointing at the wrong team.',
+  BAD_SIGNATURE: 'The signature did not verify. Treat this as a real failure rather '
+    + 'than a configuration slip.',
+  EXPIRED: 'The sign-in has genuinely expired — or the server\'s clock is wrong, '
+    + 'which looks identical from here.',
+  NOT_YET: 'The sign-in is not valid yet, which almost always means the server\'s '
+    + 'clock is behind.',
+  NO_EMAIL: 'The sign-in carries no email address, so there is nobody to look up.',
+  NO_TEAM: 'The server has no CF_ACCESS_TEAM configured.',
+  NO_AUD: 'The server has no CF_ACCESS_AUD configured.',
+  MALFORMED: 'The sign-in was not a well-formed token.',
+};
+
+/**
+ * The reload did not fix it, so stop reloading and say what went wrong.
+ *
+ * A cached page is one cause — the browser runs app.js from cache, so a reload
+ * is answered locally and never bounces through Access — but it is only one,
+ * and the button below is only a fix for that one. So the server's own reason
+ * leads, and the cache remedy is offered as what it is rather than as the
+ * diagnosis.
+ */
+function renderSignInStalled(data = {}) {
   document.body.dataset.tab = 'none';
+  const code = data.code || 'AUTH';
+  const cause = AUTH_CAUSES[code];
+
   view.innerHTML = `
     <div class="empty">
       <strong>Can't confirm your sign-in</strong>
-      <p>Reloading didn't pick up a new session. This usually means the page is
-      being served from a cache, so the reload never reached the sign-in check.</p>
+      <p>${esc(data.error || 'The server would not accept the sign-in.')}</p>
+      ${cause ? `<p>${esc(cause)}</p>` : ''}
+      <p class="hint">Reported as <code>${esc(code)}</code>. On the server:
+        <code>sudo journalctl -u weekofmeals -n 50</code></p>
       <div class="sheet-actions" style="justify-content:center">
         <button class="btn primary" data-act="hard-reload">Reload, skipping the cache</button>
       </div>

@@ -215,3 +215,63 @@ test('a failed refresh does not poison the next attempt', async () => {
   const recovered = await ks.get('cf-key-1');
   assert.equal(recovered.kid, 'cf-key-1', 'the retry should succeed rather than replay the failure');
 });
+
+/* ------------------------------------------------------------- reporting -- */
+
+test('a refused sign-in is logged with its code, and never with the token', async () => {
+  /*
+   * Without this line a refusal is invisible from the server: the browser shows
+   * a message, the operator sees a healthy service, and the two never meet.
+   * It is what turns "it keeps saying my login expired" into a code.
+   */
+  const { middleware, setLogger } = require('../server/lib/auth');
+  const lines = [];
+  setLogger((m) => lines.push(m));
+  test.after(() => setLogger(() => {}));
+
+  const mw = middleware({
+    team: TEAM,
+    aud: AUD,
+    keyStore: store(),
+    env: {},
+  });
+
+  const token = mint({ aud: ['different-application'] });
+  const req = {
+    path: '/bootstrap',
+    originalUrl: '/api/bootstrap',
+    method: 'GET',
+    get: (h) => (h.toLowerCase() === 'cookie' ? `CF_Authorization=${token}` : undefined),
+  };
+  let status = 0;
+  let payload = null;
+  const res = { status(s) { status = s; return this; }, json(b) { payload = b; return this; } };
+
+  await mw(req, res, () => { throw new Error('should not have passed'); });
+
+  assert.equal(status, 401);
+  assert.equal(payload.code, 'BAD_AUD');
+  assert.equal(lines.length, 1);
+  assert.match(lines[0], /BAD_AUD/);
+  assert.match(lines[0], /\/api\/bootstrap/);
+  assert.ok(!lines[0].includes(token), 'the assertion is a live credential and must never be logged');
+});
+
+test('a rejection on a public path is forgiven and not logged as a refusal', async () => {
+  const { middleware, setLogger } = require('../server/lib/auth');
+  const lines = [];
+  setLogger((m) => lines.push(m));
+  test.after(() => setLogger(() => {}));
+
+  const mw = middleware({
+    team: TEAM, aud: AUD, keyStore: store(), env: {},
+  });
+  const req = {
+    path: '/whoami', originalUrl: '/api/whoami', method: 'GET', get: () => undefined,
+  };
+  let passed = false;
+  await mw(req, { status() { return this; }, json() { return this; } }, () => { passed = true; });
+
+  assert.equal(passed, true, 'whoami must still answer so the page can explain itself');
+  assert.deepEqual(lines, [], 'an unauthenticated public call is normal, not a refusal');
+});

@@ -33,6 +33,10 @@ const crypto = require('crypto');
 /** Small clock tolerance: a VM's clock and Cloudflare's differ slightly. */
 const SKEW_SECONDS = 60;
 
+/* Overridable so tests can assert on it without writing to the real console. */
+let log = (message) => console.warn(`  ${message}`);
+function setLogger(fn) { log = fn; }
+
 function b64url(part) {
   return Buffer.from(String(part).replace(/-/g, '+').replace(/_/g, '/'), 'base64');
 }
@@ -257,6 +261,17 @@ function middleware(options = {}) {
       return next();
     } catch (err) {
       if (isPublic) return next();
+
+      /*
+       * Say so in the log, once per rejection.
+       *
+       * A refused sign-in is invisible from the server otherwise: the browser
+       * shows a message, the operator sees a working service, and the two
+       * never meet. This is the line that turns "it keeps saying my login
+       * expired" into a code you can act on. It carries the code and the path
+       * and nothing else — never the assertion, which is a live credential.
+       */
+      log(`sign-in refused: ${err.code || 'AUTH'} on ${req.method} ${bare}`);
       return res.status(err.status || 401).json({ error: err.message, code: err.code || 'AUTH' });
     }
   };
@@ -264,5 +279,5 @@ function middleware(options = {}) {
 
 module.exports = {
   middleware, verifyAccessToken, createKeyStore, parseAllowList, isAllowed,
-  teamDomain, certsUrl, tokenFrom, SKEW_SECONDS,
+  teamDomain, certsUrl, tokenFrom, setLogger, SKEW_SECONDS,
 };
