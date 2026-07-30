@@ -110,10 +110,27 @@ app.use('/api', (req, res, next) => {
 app.get('/images/:name', auth.middleware(), withHousehold, (req, res) => {
   const file = req.images.fileFor(req.params.name);
   if (!file) return res.status(404).end();
-  return res.sendFile(file, {
-    maxAge: '30d',
-    immutable: true,
-  }, (err) => { if (err && !res.headersSent) res.status(404).end(); });
+
+  /*
+   * `private`, and it matters enormously.
+   *
+   * These were `public, max-age=30d, immutable` when they were a static mount
+   * that anyone could read. Now they are per household — and a shared cache
+   * holding a `public` response does not know that. Cloudflare would store one
+   * family's photo at the edge and serve it to the next person who asked for
+   * that URL, without the request ever reaching this authorisation check. The
+   * isolation would look correct in the code and be defeated by the CDN.
+   *
+   * `private` keeps the browser cache, which is what actually matters for a
+   * phone in a kitchen, while forbidding every shared cache in between.
+   */
+  res.setHeader('cache-control', 'private, max-age=2592000, immutable');
+  // Belt and braces: a proxy that ignores `private` still has no excuse here.
+  res.setHeader('vary', 'cookie');
+
+  return res.sendFile(file, { cacheControl: false }, (err) => {
+    if (err && !res.headersSent) res.status(404).end();
+  });
 });
 
 app.use(express.static(path.join(__dirname, '..', 'public'), { extensions: ['html'] }));
@@ -729,6 +746,21 @@ async function start() {
       ? households.map((h) => `${h.name} (${h.members.length} member${h.members.length === 1 ? '' : 's'})`).join(', ')
       : 'none yet'}`);
     console.log(`  Sign-in: ${process.env.CF_ACCESS_TEAM ? `Cloudflare Access (${process.env.CF_ACCESS_TEAM})` : 'none — do not expose this port'}`);
+
+    /*
+     * Guarded, but nobody is named in any household — so every request that
+     * gets past Access is turned away with "you are not in a household yet".
+     * Easy to hit: ALLOWED_EMAILS is documented as optional, and when it is
+     * blank the migration has no members to inherit. Silence here would mean
+     * the first anyone hears of it is a locked-out family.
+     */
+    const guarded = Boolean(process.env.CF_ACCESS_TEAM && process.env.CF_ACCESS_AUD);
+    const named = households.reduce((n, h) => n + h.members.length, 0);
+    if (guarded && !named) {
+      console.log('\n  ⚠  Sign-in is on, but no household has any members, so everyone');
+      console.log('     who signs in will be told they are not in a household. Fix with:');
+      console.log(`\n       npm run household -- join "${households[0]?.name || 'Home'}" you@example.com\n`);
+    }
     const withAnyList = households.filter((h) => forHousehold(h.id).anylist().configured()).length;
     console.log(`  AnyList: ${withAnyList} of ${households.length} household(s) connected\n`);
   });

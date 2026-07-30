@@ -151,6 +151,14 @@ It edits `households.json` through the registry and writes atomically, so the
 file parses by construction. Hand-editing it works too, right up until the
 trailing comma that stops the server booting.
 
+**Photos are served per household**, which has one consequence worth knowing:
+their responses are `Cache-Control: private`, so Cloudflare will not cache them
+at the edge. It cannot — a shared cache holding a `public` response has no idea
+the URL is household-specific, and would serve one family's photo to the next
+person who asked for it. Browsers still cache them for thirty days, which is
+what matters on a phone; the cost is that each browser fetches each photo from
+the origin once.
+
 **Upgrading from before households** happens by itself: the old `db.json`
 becomes household number one, whoever was in `ALLOWED_EMAILS` becomes its
 founding members, and the original is left on disk as `db.json.migrated` so a

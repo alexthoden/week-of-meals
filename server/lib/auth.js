@@ -61,13 +61,36 @@ function certsUrl(team) {
 function createKeyStore({ team, fetchImpl = fetch, ttlMs = 3600000 } = {}) {
   let keys = new Map();
   let expiresAt = 0;
+  let inFlight = null;
 
+  /**
+   * One fetch at a time, however many requests are waiting on it.
+   *
+   * Photos are authenticated now, so opening a recipe grid fires twenty
+   * requests at once — and on a cold or just-expired cache every one of them
+   * used to start its own fetch to Cloudflare. Twenty simultaneous JWKS
+   * requests is a good way to get rate limited or time out, and a timeout here
+   * surfaces as a failed sign-in, which the browser reads as "session expired".
+   *
+   * Sharing the in-flight promise makes a burst cost exactly one fetch.
+   */
   async function refresh() {
-    const res = await fetchImpl(certsUrl(team), { signal: AbortSignal.timeout(8000) });
-    if (!res.ok) throw fail(`Could not reach Cloudflare to check the sign-in (${res.status}).`, 'JWKS', 503);
-    const body = await res.json();
-    keys = new Map((body.keys || []).map((k) => [k.kid, k]));
-    expiresAt = Date.now() + ttlMs;
+    if (inFlight) return inFlight;
+
+    inFlight = (async () => {
+      const res = await fetchImpl(certsUrl(team), { signal: AbortSignal.timeout(8000) });
+      if (!res.ok) throw fail(`Could not reach Cloudflare to check the sign-in (${res.status}).`, 'JWKS', 503);
+      const body = await res.json();
+      keys = new Map((body.keys || []).map((k) => [k.kid, k]));
+      expiresAt = Date.now() + ttlMs;
+    })();
+
+    try {
+      return await inFlight;
+    } finally {
+      // Cleared either way: a failed refresh must not poison the next attempt.
+      inFlight = null;
+    }
   }
 
   return {

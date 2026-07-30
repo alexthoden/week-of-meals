@@ -169,3 +169,49 @@ test('the optional allowlist can take a whole domain', () => {
   assert.ok(isAllowed('anyone@ourfamily.com', allow));
   assert.ok(!isAllowed('anyone@elsewhere.com', allow));
 });
+
+/* --------------------------------------------------- concurrent refreshes -- */
+
+test('a burst of requests costs exactly one key fetch', async () => {
+  /*
+   * Photos are authenticated now, so opening a recipe grid fires twenty
+   * requests at once. Without single-flighting, every one of them that missed
+   * the cache started its own fetch to Cloudflare — twenty simultaneous JWKS
+   * requests, which is how you get rate limited or time out. A timeout here
+   * surfaces to the browser as a failed sign-in, and the browser reads that as
+   * "your session expired".
+   */
+  let fetches = 0;
+  const ks = createKeyStore({
+    team: TEAM,
+    fetchImpl: async () => {
+      fetches += 1;
+      await new Promise((r) => setTimeout(r, 20)); // a real fetch is not instant
+      return { ok: true, status: 200, json: async () => ({ keys: [jwk] }) };
+    },
+  });
+
+  const results = await Promise.all(Array.from({ length: 20 }, () => ks.get('cf-key-1')));
+
+  assert.equal(fetches, 1, `20 concurrent lookups should share one fetch, made ${fetches}`);
+  assert.equal(results.length, 20);
+  for (const jwkOut of results) assert.equal(jwkOut.kid, 'cf-key-1');
+});
+
+test('a failed refresh does not poison the next attempt', async () => {
+  // The in-flight promise has to be cleared on failure too, or one blip would
+  // hand the same rejection to every later request for the life of the process.
+  let attempt = 0;
+  const ks = createKeyStore({
+    team: TEAM,
+    fetchImpl: async () => {
+      attempt += 1;
+      if (attempt === 1) throw new Error('network went away');
+      return { ok: true, status: 200, json: async () => ({ keys: [jwk] }) };
+    },
+  });
+
+  await assert.rejects(() => ks.get('cf-key-1'), /network went away/);
+  const recovered = await ks.get('cf-key-1');
+  assert.equal(recovered.kid, 'cf-key-1', 'the retry should succeed rather than replay the failure');
+});

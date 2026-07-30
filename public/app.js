@@ -112,6 +112,20 @@ function toast(message, kind = 'ok', action = null) {
   toast._t = setTimeout(() => { el.hidden = true; }, life);
 }
 
+/**
+ * An error whose explanation is already on screen.
+ *
+ * Some failures paint a whole screen of their own — "you are not in a
+ * household", "we cannot confirm your sign-in" — and then still have to throw,
+ * so the caller stops. Without a marker the caller's own catch paints a generic
+ * "can't reach the server" over the specific thing the person needed to read.
+ */
+function handled(message) {
+  const err = new Error(message);
+  err.handled = true;
+  return err;
+}
+
 async function api(path, options = {}) {
   const res = await fetch(`/api${path}`, {
     headers: {
@@ -131,16 +145,50 @@ async function api(path, options = {}) {
   // needs explaining, so it takes over the screen rather than flashing a toast.
   if (res.status === 403 && data.code === 'NO_HOUSEHOLD') {
     renderNoHousehold();
-    throw new Error(data.error || 'You are not in a household yet.');
+    throw handled(data.error || 'You are not in a household yet.');
   }
 
-  // Cloudflare Access sits in front of this app, so the browser already holds a
-  // session cookie and sends it automatically. A 401 here means that session
-  // lapsed; a reload sends us back through Access to pick up a fresh one.
+  /*
+   * Cloudflare Access sits in front of this app, so the browser normally holds
+   * a session cookie and sends it automatically. A 401 means that session
+   * lapsed, and a reload usually sends us back through Access for a fresh one.
+   *
+   * "Usually" is why this counts. If the page itself is being served from a
+   * cache — Cloudflare's or the browser's — the reload never reaches Access,
+   * never obtains a cookie, and comes straight back to this same 401. The old
+   * code reloaded unconditionally, so that situation span forever: a toast
+   * saying the sign-in expired, a reload, the same toast, for as long as you
+   * left the tab open.
+   *
+   * One automatic attempt, remembered for this tab only, then we stop and say
+   * something a person can act on.
+   */
   if (res.status === 401) {
+    const KEY = 'wom:reauth-attempted';
+    let alreadyTried = false;
+    try { alreadyTried = sessionStorage.getItem(KEY) === '1'; } catch { /* private mode */ }
+
+    if (alreadyTried) {
+      renderSignInStalled();
+      throw handled(data.error || 'Sign-in expired.');
+    }
+
+    try { sessionStorage.setItem(KEY, '1'); } catch { /* private mode */ }
     toast('Your sign-in expired. Reloading…', 'bad');
-    setTimeout(() => window.location.reload(), 1200);
-    throw new Error(data.error || 'Sign-in expired.');
+    // Cache-busted so the reload cannot be answered by the copy that got us
+    // into this state — which is the whole reason the loop was possible.
+    setTimeout(() => {
+      const url = new URL(window.location.href);
+      url.searchParams.set('reauth', Date.now().toString(36));
+      window.location.replace(url.toString());
+    }, 1200);
+    throw handled(data.error || 'Sign-in expired.');
+  }
+
+  // Any successful call means the session is good; forget the attempt so a
+  // genuine expiry weeks from now still gets its one automatic retry.
+  if (res.ok) {
+    try { sessionStorage.removeItem('wom:reauth-attempted'); } catch { /* ignore */ }
   }
   if (!res.ok) throw new Error(data.error || `Something went wrong (${res.status}).`);
   return data;
@@ -516,6 +564,28 @@ function renderNoHousehold() {
   document.querySelectorAll('.tab').forEach((t) => { t.disabled = true; });
 }
 
+/**
+ * The reload did not fix it, so stop reloading and say so.
+ *
+ * Almost always a cached copy of the page: the browser is running app.js from
+ * a cache, so a reload is answered locally and never bounces through Access to
+ * pick up a cookie. Both buttons therefore have to defeat a cache rather than
+ * just try again, which is the thing an ordinary reload cannot do.
+ */
+function renderSignInStalled() {
+  document.body.dataset.tab = 'none';
+  view.innerHTML = `
+    <div class="empty">
+      <strong>Can't confirm your sign-in</strong>
+      <p>Reloading didn't pick up a new session. This usually means the page is
+      being served from a cache, so the reload never reached the sign-in check.</p>
+      <div class="sheet-actions" style="justify-content:center">
+        <button class="btn primary" data-act="hard-reload">Reload, skipping the cache</button>
+      </div>
+    </div>`;
+  document.querySelectorAll('.tab').forEach((t) => { t.disabled = true; });
+}
+
 /** Only ever shown to somebody who is genuinely in more than one. */
 function householdSwitcher() {
   if (session.households.length < 2) return '';
@@ -766,6 +836,15 @@ const actions = {
   async 'tag'(el) {
     state.tag = state.tag === el.dataset.tag ? null : el.dataset.tag;
     render();
+  },
+
+  async 'hard-reload'() {
+    // Clear the one-shot flag so the fresh page gets its automatic attempt back,
+    // and go somewhere the cache has no answer for.
+    try { sessionStorage.removeItem('wom:reauth-attempted'); } catch { /* ignore */ }
+    const url = new URL(window.location.href);
+    url.searchParams.set('reauth', Date.now().toString(36));
+    window.location.replace(url.toString());
   },
 
   async 'save-anylist'(el) {
@@ -1121,8 +1200,11 @@ $('#btn-settings').addEventListener('click', () => actions.settings());
     state.tab = state.boot.recipes.length ? 'week' : 'recipes';
     render();
   } catch (err) {
-    view.innerHTML = `<div class="empty"><strong>Can't reach the server</strong>
-      <p>${esc(err.message)}</p></div>`;
+    // A handled error has already put a better explanation on the screen.
+    if (!err.handled) {
+      view.innerHTML = `<div class="empty"><strong>Can't reach the server</strong>
+        <p>${esc(err.message)}</p></div>`;
+    }
   }
 })();
 

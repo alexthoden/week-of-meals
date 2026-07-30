@@ -214,6 +214,26 @@ test('a photo is served from the requesting household\'s directory', async () =>
   assert.equal(theirs.status, 404, 'one household must not fetch another\'s photo by URL');
 });
 
+test('an authenticated photo is never cacheable by a shared cache', async () => {
+  /*
+   * The regression that turned per-household photos back into public ones.
+   *
+   * These were served by express.static with `public, max-age=30d, immutable`.
+   * Putting them behind authorisation without changing that header means
+   * Cloudflare stores one household's photo at the edge and serves it to the
+   * next person who requests that URL — the check below never runs. The
+   * isolation reads as correct in the source and is defeated by the CDN.
+   */
+  const { images } = forHousehold(ours.id);
+  const url = images.saveDataUrl(`data:image/png;base64,${Buffer.from('cacheable?').toString('base64')}`);
+  const res = await get(url, 'alex@example.com');
+
+  assert.equal(res.status, 200);
+  const cc = res.headers.get('cache-control') || '';
+  assert.match(cc, /private/, `an authorised response must not be shared-cacheable: ${cc}`);
+  assert.doesNotMatch(cc, /public/, `"public" invites Cloudflare to serve this to another household: ${cc}`);
+});
+
 test('photos are not public', async () => {
   const { images } = forHousehold(ours.id);
   const url = images.saveDataUrl(`data:image/png;base64,${Buffer.from('secret').toString('base64')}`);
