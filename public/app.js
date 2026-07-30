@@ -13,8 +13,14 @@ const FULL_DAYS = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Frid
 const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 
 /* Who the server says we are. Populated from /api/whoami, which reads the
-   verified Cloudflare Access assertion. Null when running unguarded locally. */
-const session = { guarded: false, user: null };
+   verified Cloudflare Access assertion. Null when running unguarded locally.
+
+   `households` is only ever the ones this person is actually in. Most people
+   are in one and the interface never mentions the concept to them; the switcher
+   appears only when there are two. */
+const session = {
+  guarded: false, user: null, households: [], household: null,
+};
 
 const state = {
   tab: 'week',
@@ -34,6 +40,21 @@ const state = {
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => (
   { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]
 ));
+
+/**
+ * Photo URL for the household currently being viewed.
+ *
+ * An <img> cannot carry the x-household header the API calls use, so when
+ * somebody is looking at their second household the id has to travel in the
+ * query string or the photos would be looked up in the wrong directory and
+ * come back 404.
+ */
+function imageUrl(stored) {
+  const url = String(stored || '');
+  if (!url.startsWith('/images/')) return url; // a remote URL we failed to cache
+  if (!session.household || session.households.length < 2) return url;
+  return `${url}?household=${encodeURIComponent(session.household.id)}`;
+}
 
 /* Local date parts, never toISOString(). For anyone east of UTC that
    conversion rolls the date back a day and lands you on the wrong week. */
@@ -93,11 +114,25 @@ function toast(message, kind = 'ok', action = null) {
 
 async function api(path, options = {}) {
   const res = await fetch(`/api${path}`, {
-    headers: { 'content-type': 'application/json', ...(options.headers || {}) },
+    headers: {
+      'content-type': 'application/json',
+      // Only sent by someone in more than one household; the server ignores an
+      // id you are not a member of rather than obeying it.
+      ...(session.household && session.households.length > 1
+        ? { 'x-household': session.household.id } : {}),
+      ...(options.headers || {}),
+    },
     ...options,
     body: options.body ? JSON.stringify(options.body) : undefined,
   });
   const data = await res.json().catch(() => ({}));
+
+  // Past Access but in nobody's kitchen. Not an error to retry — a state that
+  // needs explaining, so it takes over the screen rather than flashing a toast.
+  if (res.status === 403 && data.code === 'NO_HOUSEHOLD') {
+    renderNoHousehold();
+    throw new Error(data.error || 'You are not in a household yet.');
+  }
 
   // Cloudflare Access sits in front of this app, so the browser already holds a
   // session cookie and sends it automatically. A 401 here means that session
@@ -222,7 +257,7 @@ function renderRecipes() {
       ${shown.map((r) => `
         <button class="recipe-card" data-act="open-recipe" data-id="${r.id}">
           <span class="thumb">${r.image
-    ? `<img src="${esc(r.image)}" alt="" loading="lazy" onerror="this.parentNode.classList.add('blank')">`
+    ? `<img src="${esc(imageUrl(r.image))}" alt="" loading="lazy" onerror="this.parentNode.classList.add('blank')">`
     : ''}<em>${esc(initials(r.title))}</em></span>
           <h3>${esc(r.title)}</h3>
           ${r.tags.length ? `<div class="tagrow">${r.tags.slice(0, 2).map((t) => `<em class="tag" style="font-style:normal">${esc(t)}</em>`).join('')}</div>` : ''}
@@ -268,7 +303,7 @@ function renderCategoryIndex(all) {
     <button class="folder" data-act="open-category" data-category="${esc(key)}">
       <span class="folder-peek">
         ${members.slice(0, 3).map((r) => `<span class="peek">${r.image
-    ? `<img src="${esc(r.image)}" alt="" loading="lazy" onerror="this.parentNode.classList.add('blank')">`
+    ? `<img src="${esc(imageUrl(r.image))}" alt="" loading="lazy" onerror="this.parentNode.classList.add('blank')">`
     : ''}<em>${esc(initials(r.title))}</em></span>`).join('')}
         ${count > 3 ? `<span class="peek more">+${count - 3}</span>` : ''}
       </span>
@@ -459,12 +494,48 @@ function render() {
   }
 }
 
+/**
+ * Signed in, and in nobody's kitchen.
+ *
+ * Cloudflare Access let them through, so they are not an intruder — they are
+ * somebody the household list has not caught up with. That is an administrative
+ * fact, not a failure, so it is worded as one and gives whoever runs the server
+ * the exact thing they need to fix it: the address to add.
+ */
+function renderNoHousehold() {
+  document.body.dataset.tab = 'none';
+  view.innerHTML = `
+    <div class="empty">
+      <strong>You're not in a household yet</strong>
+      <p>Recipes, the week's plan and the shopping list all belong to a
+      household. ${session.user
+    ? `Ask whoever runs this server to add <code>${esc(session.user.email)}</code> to yours.`
+    : 'Ask whoever runs this server to add you to yours.'}</p>
+    </div>`;
+  // Nothing below is reachable, and leaving it live invites a second failed call.
+  document.querySelectorAll('.tab').forEach((t) => { t.disabled = true; });
+}
+
+/** Only ever shown to somebody who is genuinely in more than one. */
+function householdSwitcher() {
+  if (session.households.length < 2) return '';
+  return `
+    <p class="eyebrow on-paper" style="margin:22px 0 8px">Household</p>
+    <div class="notice on-paper">You are in more than one. Everything in the app
+      — recipes, the week, the shopping list — belongs to whichever is chosen here.</div>
+    <div class="tagrow" style="margin-top:10px">
+      ${session.households.map((h) => `<button class="tag" data-act="switch-household"
+        data-id="${esc(h.id)}" aria-pressed="${session.household?.id === h.id}"
+        style="padding:6px 12px">${esc(h.name)}</button>`).join('')}
+    </div>`;
+}
+
 /* --------------------------------------------------------- recipe UI -- */
 
 async function showRecipe(id) {
   const r = await api(`/recipes/${id}`);
   openSheet(`
-    ${r.image ? `<div class="hero"><img src="${esc(r.image)}" alt="${esc(r.title)}"
+    ${r.image ? `<div class="hero"><img src="${esc(imageUrl(r.image))}" alt="${esc(r.title)}"
       onerror="this.closest('.hero').remove()"></div>` : ''}
     <h2>${esc(r.title)}</h2>
     <p class="sub">${[r.time, r.servings].filter(Boolean).map(esc).join(' &middot; ') || 'No timing noted'}</p>
@@ -541,7 +612,7 @@ function recipeForm(recipe) {
       <input type="hidden" id="f-image" value="${esc(r.image || '')}">
       <div class="photo-picker" id="photo-picker">
         <div class="photo-preview ${r.image ? '' : 'blank'}" id="photo-preview">
-          ${r.image ? `<img src="${esc(r.image)}" alt="">` : '<span>No photo</span>'}
+          ${r.image ? `<img src="${esc(imageUrl(r.image))}" alt="">` : '<span>No photo</span>'}
         </div>
         <div class="photo-actions">
           <button class="btn" data-act="pick-image">Choose a photo</button>
@@ -695,6 +766,23 @@ const actions = {
   async 'tag'(el) {
     state.tag = state.tag === el.dataset.tag ? null : el.dataset.tag;
     render();
+  },
+
+  async 'switch-household'(el) {
+    const next = session.households.find((h) => h.id === el.dataset.id);
+    if (!next || next.id === session.household?.id) return;
+    session.household = next;
+
+    // A different kitchen entirely: the open folder, the search and the week's
+    // tick-offs all describe the one we just left.
+    state.category = null;
+    state.tag = null;
+    state.search = '';
+    state.week = null;
+
+    closeSheet();
+    await refresh();
+    toast(`Now showing ${next.name}.`);
   },
 
   async 'open-category'(el) {
@@ -919,6 +1007,8 @@ const actions = {
         <span>Signed in as ${esc(session.user.email)} via Cloudflare Access</span>
       </div>` : ''}
 
+      ${householdSwitcher()}
+
       <p class="eyebrow on-paper" style="margin:22px 0 8px">Kitchen</p>
       <div class="sheet-actions">
         <button class="btn wide" data-act="pantry-open">Pantry${
@@ -980,7 +1070,17 @@ $('#btn-settings').addEventListener('click', () => actions.settings());
       const who = await fetch('/api/whoami').then((r) => r.json());
       session.guarded = Boolean(who.authRequired);
       session.user = who.user || null;
+      session.households = who.households || [];
+      session.household = who.household || null;
     } catch { /* not fatal; the app works without knowing your name */ }
+
+    // Ask before loading rather than letting /bootstrap 403: the answer is the
+    // same either way, but this way the explanation is the first thing painted
+    // instead of arriving after a failed request.
+    if (session.guarded && session.user && !session.household) {
+      renderNoHousehold();
+      return;
+    }
 
     await loadBoot();
     await loadList();
@@ -1136,7 +1236,7 @@ function setFormImage(url) {
   const preview = $('#photo-preview');
   if (!preview) return;
   preview.classList.toggle('blank', !url);
-  preview.innerHTML = url ? `<img src="${esc(url)}" alt="">` : '<span>No photo</span>';
+  preview.innerHTML = url ? `<img src="${esc(imageUrl(url))}" alt="">` : '<span>No photo</span>';
 }
 
 /** Resize in the browser so the server never needs an image library. */

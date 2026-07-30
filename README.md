@@ -104,6 +104,58 @@ refuse; when that happens you get a plain sentence saying so, and the paste box
 is right underneath. Always give an imported recipe a glance before saving — it
 lands in the form, not straight in your library.
 
+### Households
+
+Everything in the app — recipes, the week, the shopping list, the pantry, the
+AnyList account — belongs to a household rather than to the installation. Two
+families can share one server and never see each other's dinner.
+
+Each household is one JSON file:
+
+```
+data/
+  households.json          who is in which household
+  households/<id>.json     that household's recipes, week, list, settings
+  households/backups/<id>/ its timestamped copies
+  images/<id>/             its photos
+```
+
+One file each rather than one file keyed by household, because the store
+rewrites the whole file on every save. Sharing one would mean adding a recipe
+rewrites every other family's data, and one corrupt file would cost all of them
+their library instead of one of them.
+
+Cloudflare Access still decides *who may use the app at all*. The registry
+decides *whose kitchen they land in*, which is a different question and one only
+this application can answer. Somebody who gets past Access but is in no
+household is told so plainly, with the address to add — they are not an
+intruder, just somebody the list has not caught up with.
+
+Membership is many-to-many, so you can be in your own household and your
+parents'. Almost nobody is, so the interface never mentions the concept until
+you are in two, at which point a switcher appears in Settings.
+
+**Managing membership** is a command on the server, not a screen in the app.
+There is no invite flow and no admin page, because for two families that is a
+lot of surface area for something that changes once a year:
+
+```
+npm run household -- list
+npm run household -- add "Parents" mom@example.com dad@example.com
+npm run household -- join Parents sister@example.com
+npm run household -- leave Parents sister@example.com
+npm run household -- rename Parents "Mum and Dad"
+```
+
+It edits `households.json` through the registry and writes atomically, so the
+file parses by construction. Hand-editing it works too, right up until the
+trailing comma that stops the server booting.
+
+**Upgrading from before households** happens by itself: the old `db.json`
+becomes household number one, whoever was in `ALLOWED_EMAILS` becomes its
+founding members, and the original is left on disk as `db.json.migrated` so a
+botched upgrade is one `mv` away from being undone.
+
 ### Categories, and why they are not tags
 
 A recipe has many tags and exactly one category. That is the whole distinction,
@@ -338,12 +390,14 @@ photos both live there.
 server/
   index.js              Express app and API routes
   seed.js               starter recipes
+  household.js          the membership command line
   lib/
     units.js            unit table, conversion, how amounts get written
     parse.js            one ingredient line -> quantity, unit, item, note
     consolidate.js      a week of meals -> one shopping list
     store.js            the JSON file, written atomically
     categories.js       which shelf a recipe lives on
+    households.js       the registry: who shares a kitchen
     anylist.js          AnyList session, dedupe, error handling
     import.js           pull a recipe off a web page
     images.js           copy photos in, serve them, tidy up after
