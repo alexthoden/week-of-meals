@@ -141,15 +141,20 @@ lot of surface area for something that changes once a year:
 
 ```
 npm run household -- list
+npm run household -- join sister@example.com          # one household: no name needed
 npm run household -- add Parents mom@example.com dad@example.com
-npm run household -- join Parents sister@example.com
+npm run household -- join Parents sister@example.com  # say which, when there are several
 npm run household -- leave Parents sister@example.com
 npm run household -- rename Parents --to Mum and Dad
 ```
 
-Quotes around a name with a space are optional — anything containing an `@` is
-treated as an address and everything else is the name — because `npm run` does
-not reliably keep quoting intact on the way through.
+**With a single household the name is optional**, which is worth using. Naming
+one is where things go wrong: `npm run` does not reliably keep quoting intact,
+and a name like `Shrek's Swamp` contains an apostrophe that opens a shell quote
+the terminal then waits forever to have closed — the command looks like it has
+hung when in fact it never ran. Where a name is genuinely needed, the id from
+`list` never has this problem. Otherwise anything containing an `@` is treated
+as an address and everything else is the name, so quotes are optional.
 
 **On a deployed server, run it against the real data directory**, not from a
 source checkout:

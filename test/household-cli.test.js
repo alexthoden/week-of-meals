@@ -61,6 +61,32 @@ test('every command says which registry file it touched', () => {
   }
 });
 
+test('with one household, the name can be left out entirely', () => {
+  /*
+   * Where this actually bites: a household called "Shrek's Swamp" has an
+   * apostrophe in it, which opens a quote the shell waits forever to have
+   * closed. The command appears to hang and never runs. With one household
+   * there is nothing to disambiguate, so the name is not required.
+   */
+  const solo = fs.mkdtempSync(path.join(os.tmpdir(), 'wom-solo-'));
+  test.after(() => fs.rmSync(solo, { recursive: true, force: true }));
+
+  const storage = require('../server/lib/storage');
+  storage.reset();
+  const { registry: reg } = storage.create({ DATA_ROOT: solo });
+  const only = reg.all()[0];
+
+  reg.addMember(only.id, 'alex@example.com');
+  assert.deepEqual(reg.byId(only.id).members, ['alex@example.com']);
+  storage.reset();
+});
+
+test('with two households, leaving the name out is refused, not guessed', () => {
+  // Adding somebody to the wrong family is not a guess worth making.
+  assert.throws(() => main(['join', 'someone@example.com']), /more than one household/i);
+  assert.throws(() => main(['leave', 'someone@example.com']), /more than one household/i);
+});
+
 test('a name that matches nothing lists what does exist', () => {
   assert.throws(() => main(['join', 'Nowhere', 'a@example.com']), /Known households:/);
 });

@@ -71,6 +71,34 @@ function split(args) {
   return { name, emails };
 }
 
+/**
+ * The household a command means, when the name is optional.
+ *
+ * With one household there is nothing to disambiguate, so naming it is pure
+ * ceremony — and naming it is where things go wrong. A name like "Shrek's
+ * Swamp" contains an apostrophe, which opens a quote the shell then waits
+ * forever to have closed; the command appears to hang and never runs. Letting
+ * the single obvious household be implied removes that entirely:
+ *
+ *   household join me@example.com
+ *
+ * With two or more, the name is required, because guessing which family to add
+ * somebody to is not a guess worth making.
+ */
+function target(name) {
+  if (name) return find(name);
+
+  const all = registry.all();
+  if (all.length === 1) return all[0];
+  if (!all.length) throw new Error(`No households exist yet.\n  Registry: ${registry.file}`);
+
+  const names = all.map((h) => `"${h.name}"`).join(', ');
+  throw new Error(
+    `There is more than one household, so say which: ${names}.\n`
+    + '  Names with an apostrophe or a space are easiest to give as the id from `list`.',
+  );
+}
+
 /** Accept either the uuid or the name, because nobody memorises a uuid. */
 function find(needle) {
   const key = String(needle || '').trim().toLowerCase();
@@ -112,18 +140,16 @@ const commands = {
 
   join(...args) {
     const { name, emails } = split(args);
-    if (!name) throw new Error('Say which household to join.');
     if (!emails.length) throw new Error('Give at least one email address to add.');
-    const household = find(name);
+    const household = target(name);
     for (const email of emails) registry.addMember(household.id, email);
     return `${where()}\nUpdated:\n\n${describe(registry.byId(household.id))}`;
   },
 
   leave(...args) {
     const { name, emails } = split(args);
-    if (!name) throw new Error('Say which household to leave.');
     if (!emails.length) throw new Error('Give at least one email address to remove.');
-    const household = find(name);
+    const household = target(name);
     for (const email of emails) registry.removeMember(household.id, email);
 
     const after = registry.byId(household.id);
@@ -164,7 +190,8 @@ function main(argv) {
       + 'Examples:\n'
       + '  npm run household -- list\n'
       + '  npm run household -- add "Parents" mom@example.com dad@example.com\n'
-      + '  npm run household -- join Parents sister@example.com\n'
+      + '  npm run household -- join sister@example.com        (one household: no name needed)\n'
+      + '  npm run household -- join Parents sister@example.com  (say which, when there are several)\n'
       + '  npm run household -- leave Parents sister@example.com\n'
       + '  npm run household -- rename Parents --to Mum and Dad\n\n'
       + 'On a deployed server, run it against the real data directory:\n'
