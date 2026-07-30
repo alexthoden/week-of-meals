@@ -1,0 +1,31 @@
+# Reference copy of the tunnel configuration.
+#
+# `cloudflared tunnel create` writes the real one to
+# /etc/cloudflared/config.yml (or ~/.cloudflared/config.yml). This file is here
+# so you can see what it should end up looking like, and to copy from.
+#
+# Replace TUNNEL_ID and meals.example.com with your own values.
+
+tunnel: TUNNEL_ID
+credentials-file: /etc/cloudflared/TUNNEL_ID.json
+
+# Keep a couple of connections to different Cloudflare edge locations so a
+# single one going away does not drop the household mid-recipe.
+ha-connections: 2
+
+# Buy some patience: an AnyList export walks the list one item at a time, and a
+# big week can outlast the 30-second default.
+originRequest:
+  connectTimeout: 10s
+  noTLSVerify: false
+
+ingress:
+  - hostname: meals.example.com
+    service: http://127.0.0.1:4321
+    originRequest:
+      # The app is on the same machine; this only needs to outlast a slow export.
+      httpHostHeader: meals.example.com
+
+  # Anything that does not match a rule above is refused. cloudflared requires a
+  # catch-all, and a 404 is the right answer for a tunnel with one service.
+  - service: http_status:404

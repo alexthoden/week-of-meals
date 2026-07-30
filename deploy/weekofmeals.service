@@ -1,0 +1,78 @@
+# /etc/systemd/system/weekofmeals.service
+#
+# Installed by deploy/setup.sh. The hardening directives below are not
+# decoration: this process talks to the open internet (recipe imports) and holds
+# an AnyList password, so it runs as a user that owns nothing but its own data
+# directory and cannot write anywhere else on the disk.
+
+[Unit]
+Description=Week of Meals
+Documentation=file:///opt/weekofmeals/VM-SETUP.md
+After=network-online.target
+Wants=network-online.target
+# Give up and stay down if it crashes five times in a minute, rather than
+# hammering AnyList or the log disk in a loop. These belong in [Unit].
+StartLimitBurst=5
+StartLimitIntervalSec=60
+
+[Service]
+Type=simple
+User=weekofmeals
+Group=weekofmeals
+WorkingDirectory=/opt/weekofmeals
+
+# Secrets live here, root-owned and 0600. Not in the unit file, so they stay out
+# of `systemctl cat` and out of the repo.
+EnvironmentFile=/etc/weekofmeals/env
+
+ExecStart=/usr/bin/node server/index.js
+
+Restart=always
+RestartSec=3
+
+# --- filesystem -------------------------------------------------------------
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/var/lib/weekofmeals
+StateDirectory=weekofmeals
+StateDirectoryMode=0750
+
+# --- privileges -------------------------------------------------------------
+NoNewPrivileges=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+ProtectClock=true
+ProtectProc=invisible
+RestrictNamespaces=true
+RestrictSUIDSGID=true
+RestrictRealtime=true
+LockPersonality=true
+MemoryDenyWriteExecute=false
+# ^ Node's JIT needs writable-executable pages, so this one cannot be enabled.
+
+# --- network ----------------------------------------------------------------
+# Outbound HTTPS to AnyList, recipe sites and Cloudflare. No raw sockets.
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+IPAddressDeny=link-local multicast
+# Block the cloud metadata endpoint: nothing here needs it, and it is the first
+# thing an SSRF through the recipe importer would reach for.
+IPAddressDeny=169.254.169.254/32
+
+# --- resources --------------------------------------------------------------
+# An e2-micro has 1 GB. Cap the service so a runaway import cannot take the
+# whole box down with it and lock you out of SSH.
+MemoryMax=420M
+MemoryHigh=320M
+TasksMax=64
+
+# --- logging ----------------------------------------------------------------
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=weekofmeals
+
+[Install]
+WantedBy=multi-user.target

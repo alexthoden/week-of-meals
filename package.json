@@ -1,0 +1,23 @@
+{
+  "name": "week-of-meals",
+  "version": "1.0.0",
+  "private": true,
+  "description": "A family meal planner that turns a week of recipes into an AnyList grocery list.",
+  "main": "server/index.js",
+  "scripts": {
+    "start": "node --env-file-if-exists=.env server/index.js",
+    "seed": "node --env-file-if-exists=.env server/seed.js",
+    "test": "node --test \"test/**/*.test.js\""
+  },
+  "engines": {
+    "node": ">=20.6.0"
+  },
+  "dependencies": {
+    "anylist": "^0.8.6",
+    "compression": "^1.8.1",
+    "express": "^5.1.0"
+  },
+  "devDependencies": {
+    "jsdom": "^26.0.0"
+  }
+}

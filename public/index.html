@@ -1,0 +1,85 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#0B1F19">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<title>Week of Meals</title>
+<link rel="manifest" href="/manifest.webmanifest">
+<link rel="icon" href="/icon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="/icon.svg">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Archivo:wght@600;700;800&family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+
+<header class="topbar">
+  <h1 class="wordmark">Week<span>of</span>Meals</h1>
+  <button class="icon-btn" id="btn-settings" aria-label="Settings">
+    <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><path d="M12 15.5A3.5 3.5 0 1 0 12 8.5a3.5 3.5 0 0 0 0 7Z"/><path d="m19.4 13-.3 1 1.5 1.9-1.6 2.8-2.3-.7-.9.5-.5 2.4h-3.2l-.5-2.4-.9-.5-2.3.7L6.8 16l1.5-1.9-.1-1-1.4-2L8.4 8.3l2.3.7.9-.5.5-2.4h3.2l.5 2.4.9.5 2.3-.7 1.6 2.8L19.4 13Z"/></svg>
+  </button>
+</header>
+
+<main id="view" aria-live="polite"></main>
+
+<nav class="tabbar" role="tablist">
+  <button class="tab" data-tab="recipes" role="tab">
+    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 4h11a2 2 0 0 1 2 2v14H7a2 2 0 0 1-2-2V4Z"/><path d="M9 8h6M9 12h6"/></svg>
+    <span>Recipes</span>
+  </button>
+  <button class="tab" data-tab="week" role="tab">
+    <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="5" width="18" height="16" rx="2"/><path d="M3 10h18M8 3v4M16 3v4"/></svg>
+    <span>Week</span>
+  </button>
+  <button class="tab" data-tab="list" role="tab">
+    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 6h12M8 12h12M8 18h12"/><path d="m3 6 1.2 1.2L6.5 5M3 12l1.2 1.2L6.5 11M3 18l1.2 1.2L6.5 16"/></svg>
+    <span>List</span>
+    <em class="tab-count" id="list-count" hidden></em>
+  </button>
+</nav>
+
+<!-- Cooking mode. Lives outside the sheet system because it owns the screen. -->
+<div class="cook" id="cook" hidden>
+  <!--
+    Muted looping video. Browsers keep the screen lit while something plays,
+    which is the only keep-awake that works over plain http on the home wifi.
+    Wake Lock is tried first and needs https, so this is the fallback.
+  -->
+  <video id="nosleep" playsinline muted loop disablepictureinpicture
+         aria-hidden="true" tabindex="-1" preload="auto">
+    <source src="/nosleep.webm" type="video/webm">
+    <source src="/nosleep.mp4" type="video/mp4">
+  </video>
+
+  <header class="cook-bar">
+    <button class="btn ghost" data-act="cook-close">Close</button>
+    <h2 id="cook-title"></h2>
+    <button class="awake" id="awake-badge" data-act="cook-awake" title="Keep the screen awake"></button>
+  </header>
+
+  <div class="cook-body" id="cook-body"></div>
+
+  <footer class="cook-foot">
+    <button class="btn" id="cook-prev" data-act="cook-prev">Back</button>
+    <span class="pos" id="cook-pos"></span>
+    <button class="btn primary" id="cook-next" data-act="cook-next">Next step</button>
+  </footer>
+</div>
+
+<div class="sheet-host" id="sheet-host" hidden>
+  <div class="sheet-scrim" data-close></div>
+  <section class="sheet" role="dialog" aria-modal="true" aria-labelledby="sheet-title">
+    <button class="sheet-grip" data-close aria-label="Close"></button>
+    <div class="sheet-body" id="sheet-body"></div>
+  </section>
+</div>
+
+<output class="toast" id="toast" role="status" hidden></output>
+
+<script src="/app.js" defer></script>
+</body>
+</html>

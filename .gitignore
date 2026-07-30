@@ -1,0 +1,16 @@
+node_modules/
+.env
+
+# generated data — recipes, photos, backups. Never committed.
+data/db.json
+data/db.json.tmp
+data/backups/
+data/images/
+data/.anylist_credentials
+
+# deployment secrets for the VM
+deploy/env.local
+/etc/weekofmeals/
+
+*.log
+.DS_Store

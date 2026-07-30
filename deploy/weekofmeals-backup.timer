@@ -1,0 +1,12 @@
+# /etc/systemd/system/weekofmeals-backup.timer
+[Unit]
+Description=Nightly Week of Meals backup
+
+[Timer]
+OnCalendar=*-*-* 03:20:00
+# Survive the VM being asleep or rebooted at 03:20.
+Persistent=true
+RandomizedDelaySec=600
+
+[Install]
+WantedBy=timers.target

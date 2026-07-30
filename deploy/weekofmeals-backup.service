@@ -1,0 +1,17 @@
+# /etc/systemd/system/weekofmeals-backup.service
+[Unit]
+Description=Back up Week of Meals data
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=weekofmeals
+Group=weekofmeals
+EnvironmentFile=/etc/weekofmeals/env
+ExecStart=/opt/weekofmeals/deploy/backup.sh
+PrivateTmp=true
+ProtectSystem=strict
+ReadWritePaths=/var/lib/weekofmeals
+NoNewPrivileges=true
+SyslogIdentifier=weekofmeals-backup
