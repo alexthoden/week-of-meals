@@ -206,12 +206,18 @@ sudo journalctl -u weekofmeals -n 50 | grep 'sign-in refused'
 | `EXPIRED`, `NOT_YET` | Genuinely expired, or the machine's clock has drifted — `timedatectl` will say which. |
 | `BAD_SIGNATURE` | The signature did not verify. Treat as a real failure, not a configuration slip. |
 
-`BAD_AUD` is the one most people meet, and it has three usual causes: the tag was
-copied from the wrong application; the value is **quoted** in
-`/etc/weekofmeals/env`, which systemd keeps as part of the value; or a second
-Access application covers the same hostname and is minting the assertion. The
-log line prints the configured tag and the one the assertion carries, so the
-answer is whichever of the two you did not expect.
+`BAD_AUD` is the one most people meet. Surrounding quotes, stray whitespace, a
+carriage return from an editor on Windows and a difference in case are all
+tolerated now — every one of them printed identically to the correct value while
+failing an exact comparison, so "I checked, it matches" and "it does not match"
+could both be true at once. What remains is a genuine mismatch: the tag was
+copied from the wrong application, or a second Access application covers the
+same hostname and is minting the assertion instead. The log prints both values
+in angle brackets, so the answer is whichever of the two you did not expect.
+
+A `CF_ACCESS_AUD` that is not 64 hex characters cannot match anything, so the
+server says so at startup rather than letting you discover it one refused
+sign-in at a time.
 
 The assertion itself is never logged. It is a live credential; the AUD tag
 beside it merely names an application and cannot authenticate anything.

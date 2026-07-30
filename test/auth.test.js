@@ -304,7 +304,60 @@ test('a mismatched audience logs both values, and never the assertion', async ()
 
   assert.equal(lines.length, 1);
   assert.match(lines[0], /BAD_AUD/);
-  assert.match(lines[0], new RegExp(`configured ${AUD}`), 'should name what the server expects');
-  assert.match(lines[0], new RegExp(theirs), 'and what the assertion actually carries');
+  assert.match(lines[0], new RegExp(`configured <${AUD}>`), 'should name what the server expects');
+  assert.match(lines[0], new RegExp(`<${theirs}>`), 'and what the assertion actually carries');
   assert.ok(!lines[0].includes(token), 'but never the assertion itself');
+});
+
+/* --------------------------------------------------------- config hygiene -- */
+
+test('a setting keeps working through whitespace, quotes and case', async () => {
+  /*
+   * Every one of these prints identically to the correct value, so checking by
+   * eye says "it matches" while the comparison says otherwise. systemd reads
+   * EnvironmentFile without removing quotes; a file edited on Windows keeps a
+   * carriage return. Both were a guaranteed BAD_AUD with no visible cause.
+   */
+  const variants = {
+    'exactly right': AUD,
+    'trailing space': `${AUD} `,
+    'leading space': ` ${AUD}`,
+    'carriage return': `${AUD}\r`,
+    'double quoted by systemd': `"${AUD}"`,
+    'single quoted': `'${AUD}'`,
+    'upper cased': AUD.toUpperCase(),
+  };
+
+  for (const [label, configured] of Object.entries(variants)) {
+    const claims = await verify(mint(), { aud: configured });
+    assert.equal(claims.email, 'cook@example.com', `${label} should be accepted`);
+  }
+});
+
+test('a genuinely different audience is still refused', () => {
+  // The forgiveness above must not become "any audience will do".
+  assert.rejects(() => verify(mint({ aud: ['b'.repeat(64)] })), /different application/);
+  assert.rejects(() => verify(mint({ aud: [] })), /different application/);
+  assert.rejects(() => verify(mint({ aud: [`${AUD}extra`] })), /different application/);
+});
+
+test('a team name survives the same treatment', () => {
+  assert.equal(teamDomain(' ourhouse '), 'ourhouse.cloudflareaccess.com');
+  assert.equal(teamDomain('"ourhouse"'), 'ourhouse.cloudflareaccess.com');
+  assert.equal(teamDomain('ourhouse\r'), 'ourhouse.cloudflareaccess.com');
+});
+
+test('an AUD that cannot possibly be a tag is called out at startup', () => {
+  const { describeConfig } = require('../server/lib/auth');
+
+  assert.equal(describeConfig({ CF_ACCESS_TEAM: 'ourhouse', CF_ACCESS_AUD: AUD }), null);
+  assert.equal(describeConfig({ CF_ACCESS_TEAM: 'ourhouse', CF_ACCESS_AUD: `"${AUD}"` }), null,
+    'quoting is handled, so it should not also warn');
+  assert.equal(describeConfig({ CF_ACCESS_TEAM: '', CF_ACCESS_AUD: '' }), null,
+    'unguarded is a normal way to run, not a misconfiguration');
+
+  // An application id or a name here refuses every sign-in, and the only
+  // symptom is that nobody can get in.
+  assert.match(describeConfig({ CF_ACCESS_TEAM: 'ourhouse', CF_ACCESS_AUD: 'my-meal-planner' }), /BAD_AUD/);
+  assert.match(describeConfig({ CF_ACCESS_TEAM: 'ourhouse', CF_ACCESS_AUD: 'abc123' }), /64 hex/);
 });

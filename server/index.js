@@ -747,6 +747,9 @@ async function start() {
       : 'none yet'}`);
     console.log(`  Sign-in: ${process.env.CF_ACCESS_TEAM ? `Cloudflare Access (${process.env.CF_ACCESS_TEAM})` : 'none — do not expose this port'}`);
 
+    const misconfigured = auth.describeConfig();
+    if (misconfigured) console.log(`\n  ⚠  ${misconfigured}`);
+
     /*
      * Guarded, but nobody is named in any household — so every request that
      * gets past Access is turned away with "you are not in a household yet".

@@ -48,8 +48,27 @@ function fail(message, code = 'AUTH', status = 401) {
   return err;
 }
 
+/**
+ * Clean a value that came from a config file.
+ *
+ * `/etc/weekofmeals/env` is read by systemd, which is not a shell: it does no
+ * quote removal, so `CF_ACCESS_AUD="abc"` yields a value that literally
+ * includes the quotes. A file edited on Windows leaves a carriage return on the
+ * end. Either one fails an exact comparison while printing identically to the
+ * correct value, so "I checked, it matches" and "it does not match" are both
+ * true at once — which is a miserable thing to debug.
+ *
+ * Trimming and unquoting here means the settings behave the way everyone
+ * already assumes they do.
+ */
+function cleanSetting(value) {
+  const trimmed = String(value ?? '').trim();
+  const unquoted = /^(["']).*\1$/.test(trimmed) ? trimmed.slice(1, -1) : trimmed;
+  return unquoted.trim();
+}
+
 function teamDomain(team) {
-  const name = String(team || '').trim().replace(/^https?:\/\//, '').replace(/\/+$/, '');
+  const name = cleanSetting(team).replace(/^https?:\/\//, '').replace(/\/+$/, '');
   if (!name) return '';
   return name.includes('.') ? name : `${name}.cloudflareaccess.com`;
 }
@@ -162,9 +181,17 @@ async function verifyAccessToken(token, { team, aud, keyStore, now = Date.now() 
     throw fail('That Access assertion came from another team.', 'BAD_ISS');
   }
 
-  // Without this, an assertion for a different Access application would pass.
+  /*
+   * Without this, an assertion for a different Access application would pass.
+   *
+   * Compared case-insensitively after cleaning: an AUD tag is 64 hex
+   * characters, so case carries no information and folding it cannot let a
+   * different application through — while a tag pasted from somewhere that
+   * upper-cased it would otherwise be rejected for no reason.
+   */
+  const wanted = cleanSetting(aud).toLowerCase();
   const audiences = Array.isArray(claims.aud) ? claims.aud : [claims.aud];
-  if (!audiences.includes(aud)) {
+  if (!audiences.map((a) => cleanSetting(a).toLowerCase()).includes(wanted)) {
     const err = fail('That Access assertion was issued for a different application.', 'BAD_AUD');
     /*
      * Both values, because "they do not match" without them is still a hunt
@@ -177,7 +204,11 @@ async function verifyAccessToken(token, { team, aud, keyStore, now = Date.now() 
      * (systemd keeps the quotes), or a second Access application covering the
      * same hostname and minting the assertion instead.
      */
-    err.detail = `configured ${aud}, assertion carries ${audiences.filter(Boolean).join(', ') || '(none)'}`;
+    // Angle brackets so a stray space or carriage return is visible rather than
+    // being the invisible thing that caused this in the first place.
+    const show = (v) => `<${String(v).replace(/\r/g, '\\r')}>`;
+    err.detail = `configured ${show(aud)}, assertion carries `
+      + `${audiences.filter(Boolean).map(show).join(', ') || '(none)'}`;
     throw err;
   }
 
@@ -228,8 +259,8 @@ function tokenFrom(req) {
  */
 function middleware(options = {}) {
   const env = options.env || process.env;
-  const team = options.team || env.CF_ACCESS_TEAM || '';
-  const aud = options.aud || env.CF_ACCESS_AUD || '';
+  const team = cleanSetting(options.team || env.CF_ACCESS_TEAM || '');
+  const aud = cleanSetting(options.aud || env.CF_ACCESS_AUD || '');
   const allow = options.allow || parseAllowList(env);
   // Mounted middleware sees a path relative to its mount point, so both forms
   // are matched. Getting this wrong locks the browser out of its own bootstrap.
@@ -291,7 +322,30 @@ function middleware(options = {}) {
   };
 }
 
+/**
+ * Complain at boot about a CF_ACCESS_AUD that cannot possibly match.
+ *
+ * An Access Application Audience tag is 64 hex characters. Anything else — an
+ * application id, a name, a value that kept its quotes — will refuse every
+ * sign-in with BAD_AUD, and the only symptom is that nobody can get in. Saying
+ * so once at startup costs nothing and turns a long afternoon into a glance at
+ * the log. A warning rather than a refusal to start, because Cloudflare owns
+ * this format and may change it.
+ */
+function describeConfig(env = process.env) {
+  const team = cleanSetting(env.CF_ACCESS_TEAM);
+  const aud = cleanSetting(env.CF_ACCESS_AUD);
+  if (!team || !aud) return null;
+  if (/^[0-9a-f]{64}$/i.test(aud)) return null;
+
+  return `CF_ACCESS_AUD does not look like an Access Application Audience tag `
+    + `(expected 64 hex characters, got ${aud.length}: <${aud.slice(0, 24)}${aud.length > 24 ? '…' : ''}>). `
+    + 'Every sign-in will be refused with BAD_AUD until this is the AUD tag from '
+    + "the Access application's Overview tab.";
+}
+
 module.exports = {
   middleware, verifyAccessToken, createKeyStore, parseAllowList, isAllowed,
-  teamDomain, certsUrl, tokenFrom, setLogger, SKEW_SECONDS,
+  teamDomain, certsUrl, tokenFrom, setLogger, cleanSetting, describeConfig,
+  SKEW_SECONDS,
 };
