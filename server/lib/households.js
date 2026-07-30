@@ -30,6 +30,10 @@ class Registry {
   constructor(file) {
     this.file = file;
     this.data = structuredClone(EMPTY);
+    /* True when this run created the file rather than opening an existing one.
+       Harmless on a first boot, and the loudest possible hint that a command
+       is pointed at the wrong directory. */
+    this.created = false;
     this.load();
   }
 
@@ -44,6 +48,7 @@ class Registry {
         throw new Error(`Could not read ${this.file}: ${err.message}`);
       }
       this.data = structuredClone(EMPTY);
+      this.created = true;
       this.save();
     }
   }

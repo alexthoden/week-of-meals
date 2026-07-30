@@ -141,11 +141,29 @@ lot of surface area for something that changes once a year:
 
 ```
 npm run household -- list
-npm run household -- add "Parents" mom@example.com dad@example.com
+npm run household -- add Parents mom@example.com dad@example.com
 npm run household -- join Parents sister@example.com
 npm run household -- leave Parents sister@example.com
-npm run household -- rename Parents "Mum and Dad"
+npm run household -- rename Parents --to Mum and Dad
 ```
+
+Quotes around a name with a space are optional — anything containing an `@` is
+treated as an address and everything else is the name — because `npm run` does
+not reliably keep quoting intact on the way through.
+
+**On a deployed server, run it against the real data directory**, not from a
+source checkout:
+
+```bash
+sudo -u weekofmeals DATA_ROOT=/var/lib/weekofmeals \
+  node /opt/weekofmeals/server/household.js join Parents mum@example.com
+```
+
+This is worth being careful about. The registry path comes from `DATA_ROOT`, so
+running the command in a checkout edits `./data/households.json` — a different,
+usually empty registry that the running server never reads. It would report
+success and change nothing. Every run therefore prints the file it touched, and
+warns loudly if it had to create one.
 
 It edits `households.json` through the registry and writes atomically, so the
 file parses by construction. Hand-editing it works too, right up until the

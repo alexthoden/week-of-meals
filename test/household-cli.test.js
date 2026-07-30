@@ -33,6 +33,38 @@ test('add creates a household with its members', () => {
   assert.deepEqual(parents.members, ['mom@example.com', 'dad@example.com']);
 });
 
+test('a household name with spaces survives npm mangling the quotes', () => {
+  /*
+   * `npm run household -- join "Shrek's Swamp" me@example.com` does not
+   * reliably keep its quoting through npm, so the name can arrive as two
+   * arguments. Anything with an @ is an address; the rest is the name.
+   */
+  main(['add', "Shrek's", 'Swamp', 'ogre@example.com']);
+  main(['join', "Shrek's", 'Swamp', 'donkey@example.com']);
+
+  const swamp = registry().all().find((h) => h.name === "Shrek's Swamp");
+  assert.ok(swamp, 'the two fragments should have been rejoined into one name');
+  assert.deepEqual(swamp.members, ['ogre@example.com', 'donkey@example.com']);
+});
+
+test('rename takes --to, so both names may contain spaces', () => {
+  main(['rename', "Shrek's", 'Swamp', '--to', "Fiona's", 'Castle']);
+  assert.ok(registry().all().some((h) => h.name === "Fiona's Castle"));
+  assert.throws(() => main(['rename', 'A', 'B']), /--to/);
+});
+
+test('every command says which registry file it touched', () => {
+  // Running from a source checkout edits a different, empty registry that the
+  // running server never reads. Printing the path is what makes that visible.
+  for (const argv of [['list'], ['join', "Fiona's", 'Castle', 'x@example.com']]) {
+    assert.match(main(argv), /Registry: .*households\.json/);
+  }
+});
+
+test('a name that matches nothing lists what does exist', () => {
+  assert.throws(() => main(['join', 'Nowhere', 'a@example.com']), /Known households:/);
+});
+
 test('a household can be named or identified by its id', () => {
   const parents = registry().all().find((h) => h.name === 'Parents');
 
@@ -55,7 +87,7 @@ test('leave removes somebody and says so when the last one goes', () => {
 
 test('rename keeps the id, so nothing else has to be updated', () => {
   const before = registry().all().find((h) => h.name === 'Parents');
-  main(['rename', 'Parents', 'Mum and Dad']);
+  main(['rename', 'Parents', '--to', 'Mum and Dad']);
   const after = registry().byId(before.id);
 
   assert.equal(after.name, 'Mum and Dad');
@@ -69,7 +101,7 @@ test('an unknown household is refused rather than silently created', () => {
 test('a command with missing arguments explains itself', () => {
   assert.throws(() => main(['add']), /Give the household a name/);
   assert.throws(() => main(['join', 'Home']), /at least one email/);
-  assert.throws(() => main(['rename', 'Home']), /Give the new name/);
+  assert.throws(() => main(['rename', 'Home', '--to']), /Give the new name/);
 });
 
 test('an unrecognised command prints usage instead of throwing', () => {
