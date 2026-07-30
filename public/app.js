@@ -768,6 +768,26 @@ const actions = {
     render();
   },
 
+  async 'save-anylist'(el) {
+    el.classList.add('busy');
+    try {
+      await api('/anylist/account', {
+        method: 'PUT',
+        body: {
+          email: $('#f-anylist-email').value,
+          password: $('#f-anylist-password').value,
+        },
+      });
+      closeSheet();
+      await refresh();
+      toast('AnyList sign-in saved.');
+    } catch (err) {
+      toast(err.message, 'bad');
+    } finally {
+      el.classList.remove('busy');
+    }
+  },
+
   async 'switch-household'(el) {
     const next = session.households.find((h) => h.id === el.dataset.id);
     if (!next || next.id === session.household?.id) return;
@@ -997,10 +1017,24 @@ const actions = {
         <input type="checkbox" id="opt-monday" ${state.boot.settings.startOfWeek === 1 ? 'checked' : ''}>
       </label>
 
-      <div class="notice on-paper" style="margin-top:16px">
-        AnyList: ${state.boot.anylist.configured
-    ? `connected${state.boot.settings.listName ? `, sending to &ldquo;${esc(state.boot.settings.listName)}&rdquo;` : ''}`
-    : 'not set up — add credentials to <code>.env</code> and restart'}
+      <p class="eyebrow on-paper" style="margin:22px 0 8px">AnyList</p>
+      <div class="notice on-paper">
+        ${state.boot.anylist.configured
+    ? `Connected${state.boot.settings.listName ? `, sending to &ldquo;${esc(state.boot.settings.listName)}&rdquo;` : ''}.`
+    : 'Not set up. The shopping list still works — this only adds the button that pushes it to AnyList.'}
+      </div>
+      <label class="field"><span>AnyList email</span>
+        <input id="f-anylist-email" type="email" autocomplete="off"
+               value="${esc(state.boot.anylist.email || '')}" placeholder="you@example.com"></label>
+      <label class="field"><span>AnyList password</span>
+        <input id="f-anylist-password" type="password" autocomplete="new-password"
+               placeholder="${state.boot.anylist.hasPassword ? 'unchanged' : 'your AnyList password'}">
+        <p class="hint">This household's own AnyList account, kept apart from any other
+          household's. AnyList has no app passwords, so this is the real one — it is
+          encrypted before it is stored and never sent back to this page. Leave it blank
+          to keep the one already saved.</p></label>
+      <div class="sheet-actions">
+        <button class="btn" data-act="save-anylist">Save AnyList sign-in</button>
       </div>
 
       ${session.user ? `<div class="whoami">

@@ -4,9 +4,16 @@ node_modules/
 # generated data — recipes, photos, backups. Never committed.
 data/db.json
 data/db.json.tmp
+data/db.json.migrated
+data/households.json
+data/households.json.tmp
+data/households/
 data/backups/
 data/images/
 data/.anylist_credentials
+
+# the key that decrypts the stored AnyList passwords
+data/secret.key
 
 # deployment secrets for the VM
 deploy/env.local

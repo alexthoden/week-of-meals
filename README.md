@@ -314,11 +314,29 @@ is reverse-engineered from their apps. Three consequences shaped the code:
    failure comes back as a plain sentence rather than a stack trace. The Copy
    button on the list always works, so a broken export is an annoyance rather
    than a dead end.
-2. **Auth is your actual email and password**, not a revocable token. They're
-   read from `.env`, never written to `data/db.json`, and never sent to the
-   browser. This is why the app is built for one household rather than for
-   sign-ups: running a service that holds other people's third-party passwords
-   is a serious undertaking, and this isn't one.
+2. **Auth is your actual email and password**, not a revocable token. Each
+   household stores its own under Settings, because a shared account would mean
+   your parents' shopping list arriving in your AnyList — a privacy failure
+   rather than a missing feature, and a silent one, since the export would
+   report success either way. A household with no account simply cannot export;
+   it never falls back to another household's.
+
+   Because AnyList offers nothing more limited to use, that really is somebody's
+   account password, so it is **encrypted at rest** (AES-256-GCM) before it
+   touches the disk and never sent back to the browser — the page is told only
+   whether a password exists. The key comes from `SECRET_KEY`, or is generated
+   once into `data/secret.key` with mode 0600.
+
+   Be clear about what that buys: it protects the database file and every backup
+   of it, which are the things that get tarred up nightly and copied off the box.
+   It does not protect against somebody who already has root on the running
+   server, because the process must be able to decrypt in order to log in. There
+   is no way around that for a credential used unattended. Losing the key costs
+   you the stored passwords and nothing else; they can be typed in again.
+
+   This is still not a service you should open to sign-ups. Holding a handful of
+   family members' third-party passwords is one thing; holding strangers' is a
+   serious undertaking, and this isn't one.
 3. **Exports are idempotent-ish on purpose.** Sending twice won't duplicate
    items — it skips anything already sitting unchecked on the target list, and
    remembers what it sent so you can choose "only what hasn't been sent yet"
@@ -398,6 +416,7 @@ server/
     store.js            the JSON file, written atomically
     categories.js       which shelf a recipe lives on
     households.js       the registry: who shares a kitchen
+    secrets.js          encryption at rest for AnyList passwords
     anylist.js          AnyList session, dedupe, error handling
     import.js           pull a recipe off a web page
     images.js           copy photos in, serve them, tidy up after

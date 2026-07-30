@@ -48,6 +48,11 @@ RECIPES=$(node -e '
 
 HOUSEHOLDS=$(node -e 'process.stdout.write(String((JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")).households||[]).length))' "$DATA_DIR/households.json")
 
+# secret.key is deliberately NOT in this list. It decrypts the AnyList
+# passwords inside the household files, so shipping it alongside them — into
+# the same tarball, off the same box, to the same bucket — would make the
+# encryption ornamental. Back the key up separately, somewhere the archives
+# are not.
 tar -czf "$ARCHIVE" -C "$DATA_DIR" \
   households.json \
   $( [ -d "$DATA_DIR/households" ] && echo households ) \

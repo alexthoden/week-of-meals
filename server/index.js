@@ -10,12 +10,13 @@ const auth = require('./lib/auth');
 const { consolidate, AISLE_ORDER } = require('./lib/consolidate');
 const { parseIngredient } = require('./lib/parse');
 const categories = require('./lib/categories');
-const anylist = require('./lib/anylist');
 const { importFromUrl } = require('./lib/import');
 
 const PORT = Number(process.env.PORT) || 4321;
 
-const { registry, forHousehold, describe } = storage.create();
+const {
+  registry, forHousehold, secrets, describe,
+} = storage.create();
 const app = express();
 
 // 12 MB: a browser-resized photo arrives as base64, which inflates by a third.
@@ -87,6 +88,7 @@ function withHousehold(req, res, next) {
   const scoped = forHousehold(household.id);
   req.store = scoped.store;
   req.images = scoped.images;
+  req.anylist = scoped.anylist();
   return scoped.store.refresh().then(() => next()).catch(next);
 }
 
@@ -213,7 +215,12 @@ app.get('/api/bootstrap', wrap(async (req, res) => {
       ...m, title: recipeById(req.store, m.recipeId)?.title || 'Deleted recipe',
     }))])),
     settings: req.store.data.settings,
-    anylist: { configured: anylist.configured() },
+    // The address, and whether a password exists — never the password itself.
+    anylist: {
+      configured: req.anylist.configured(),
+      email: (req.store.data.settings.anylist || {}).email || '',
+      hasPassword: Boolean((req.store.data.settings.anylist || {}).password),
+    },
   });
 }));
 
@@ -491,8 +498,52 @@ app.put('/api/list/include', wrap(async (req, res) => {
 
 /* ------------------------------------------------------------- anylist -- */
 
+/**
+ * This household's AnyList sign-in.
+ *
+ * The password is encrypted before it touches the disk and is never sent back —
+ * the browser only ever learns whether one is set, which is all it needs in
+ * order to draw the form. AnyList has no OAuth and no API tokens, so this really
+ * is somebody's account password and it is treated like one.
+ */
+app.get('/api/anylist/account', wrap(async (req, res) => {
+  const account = req.store.data.settings.anylist || {};
+  res.json({
+    email: account.email || '',
+    hasPassword: Boolean(account.password),
+    configured: req.anylist.configured(),
+  });
+}));
+
+app.put('/api/anylist/account', wrap(async (req, res) => {
+  const email = String(req.body.email || '').trim();
+  const password = String(req.body.password || '');
+
+  if (!email) {
+    // Clearing the email disconnects the account rather than half-configuring it.
+    await req.store.update((d) => { d.settings.anylist = { email: '', password: '' }; });
+    return res.json({ email: '', hasPassword: false, configured: false });
+  }
+
+  await req.store.update((d) => {
+    const existing = d.settings.anylist || {};
+    d.settings.anylist = {
+      email,
+      // An empty password field means "leave it alone", so somebody can correct
+      // a typo in the address without typing the password again.
+      password: password ? secrets.encrypt(password) : (existing.password || ''),
+    };
+  });
+
+  return res.json({
+    email,
+    hasPassword: Boolean((req.store.data.settings.anylist || {}).password),
+    configured: forHousehold(req.household.id).anylist().configured(),
+  });
+}));
+
 app.get('/api/anylist/lists', wrap(async (req, res) => {
-  res.json({ lists: await anylist.listNames() });
+  res.json({ lists: await req.anylist.listNames() });
 }));
 
 app.post('/api/anylist/export', wrap(async (req, res) => {
@@ -515,7 +566,7 @@ app.post('/api/anylist/export', wrap(async (req, res) => {
     details: i.recipes.map((r) => r.title).join(', '),
   }));
 
-  const result = await anylist.addItems(listName, payload, {
+  const result = await req.anylist.addItems(listName, payload, {
     skipExisting: req.body.skipExisting !== false,
   });
 
@@ -678,9 +729,8 @@ async function start() {
       ? households.map((h) => `${h.name} (${h.members.length} member${h.members.length === 1 ? '' : 's'})`).join(', ')
       : 'none yet'}`);
     console.log(`  Sign-in: ${process.env.CF_ACCESS_TEAM ? `Cloudflare Access (${process.env.CF_ACCESS_TEAM})` : 'none — do not expose this port'}`);
-    console.log(anylist.configured()
-      ? '  AnyList: credentials found\n'
-      : '  AnyList: not configured (export is disabled until you add credentials to .env)\n');
+    const withAnyList = households.filter((h) => forHousehold(h.id).anylist().configured()).length;
+    console.log(`  AnyList: ${withAnyList} of ${households.length} household(s) connected\n`);
   });
 }
 
