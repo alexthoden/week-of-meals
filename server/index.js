@@ -15,7 +15,7 @@ const { importFromUrl } = require('./lib/import');
 
 const PORT = Number(process.env.PORT) || 4321;
 
-const { store, images, kind, describe } = storage.create();
+const { registry, forHousehold, describe } = storage.create();
 const app = express();
 
 // 12 MB: a browser-resized photo arrives as base64, which inflates by a third.
@@ -40,20 +40,80 @@ app.use(compression());
 
 app.use(express.json({ limit: '12mb' }));
 
-// On S3 the photos are served straight from the bucket through CloudFront and
-// never touch this process, so there is nothing local to mount.
-if (images.IMAGE_DIR) {
-  app.use('/images', express.static(images.IMAGE_DIR, { maxAge: '30d', immutable: true }));
-}
-
-// Does nothing until GOOGLE_CLIENT_ID is set, which is how it runs at home.
+// Does nothing until CF_ACCESS_TEAM and CF_ACCESS_AUD are set, which is how it
+// runs at home.
 app.use('/api', auth.middleware());
 
-// Reload the document so one phone sees what another just changed. A no-op on
-// disk, one small GET on S3.
+/**
+ * Work out whose kitchen this request is about, and hand the handlers that
+ * household's store and photo directory.
+ *
+ * Access has already decided whether this person may use the app at all. This
+ * decides which data they see, which is a different question and one only this
+ * application can answer.
+ *
+ * Running unguarded — on a laptop, on the home wifi — there is no verified
+ * email to look anyone up by, so every request belongs to the first household.
+ * That is the same thing the app did before households existed, said out loud.
+ */
+function resolveHousehold(req) {
+  // Unguarded: no verified email exists to look anyone up by, so there is one
+  // household and it is everyone's.
+  if (req.user && req.user.local) return registry.all()[0] || null;
+
+  // Guarded but unidentified. This is reachable only on the public endpoints,
+  // which answer without a valid assertion — and "I could not tell who you are"
+  // must never resolve to somebody's kitchen.
+  if (!req.user) return null;
+
+  const mine = registry.forEmail(req.user.email);
+  if (!mine.length) return null;
+
+  // Somebody in two households picks with ?household=; otherwise the first is
+  // theirs. An id they are not a member of is ignored rather than obeyed.
+  const asked = String(req.query.household || req.get('x-household') || '');
+  return mine.find((h) => h.id === asked) || mine[0];
+}
+
+function withHousehold(req, res, next) {
+  const household = resolveHousehold(req);
+  if (!household) {
+    return res.status(403).json({
+      error: `${req.user?.email || 'You'} is not in a household yet.`,
+      code: 'NO_HOUSEHOLD',
+    });
+  }
+  req.household = household;
+  const scoped = forHousehold(household.id);
+  req.store = scoped.store;
+  req.images = scoped.images;
+  return scoped.store.refresh().then(() => next()).catch(next);
+}
+
 app.use('/api', (req, res, next) => {
-  store.refresh().then(() => next()).catch(next);
+  // The bootstrap endpoints have to answer before a household is known.
+  if (/^\/(whoami|healthz)$/.test(req.path)) return next();
+  return withHousehold(req, res, next);
 });
+
+/**
+ * Photos, served per household.
+ *
+ * They used to be a plain express.static mount, which served every photo to
+ * anyone who could reach the port — the filenames are random, but that is
+ * obscurity, not access control. Now the household resolved above decides which
+ * directory the name is looked up in, so one family cannot fetch another's
+ * photos even with the exact URL.
+ */
+app.get('/images/:name', auth.middleware(), withHousehold, (req, res) => {
+  const file = req.images.fileFor(req.params.name);
+  if (!file) return res.status(404).end();
+  return res.sendFile(file, {
+    maxAge: '30d',
+    immutable: true,
+  }, (err) => { if (err && !res.headersSent) res.status(404).end(); });
+});
+
 app.use(express.static(path.join(__dirname, '..', 'public'), { extensions: ['html'] }));
 
 const id = () => crypto.randomUUID();
@@ -108,15 +168,19 @@ function cleanScale(value) {
   return Math.round(Math.min(n, 20) * 100) / 100;
 }
 
-function recipeById(rid) {
+/* These take the store explicitly rather than reaching for a module-global one.
+   With a store per household there is no ambient "the" database any more, and a
+   helper that guessed would be a way to read the wrong family's recipes. */
+
+function recipeById(store, rid) {
   return store.data.recipes.find((r) => r.id === rid) || null;
 }
 
-function mealsForWeek(start) {
+function mealsForWeek(store, start) {
   const out = [];
   for (const date of weekDates(start)) {
     for (const meal of store.data.plan[date] || []) {
-      const recipe = recipeById(meal.recipeId);
+      const recipe = recipeById(store, meal.recipeId);
       if (recipe) out.push({ ...meal, day: date, recipe });
     }
   }
@@ -126,7 +190,7 @@ function mealsForWeek(start) {
 /* ---------------------------------------------------------------- state -- */
 
 app.get('/api/bootstrap', wrap(async (req, res) => {
-  const startDay = store.data.settings.startOfWeek ?? 0;
+  const startDay = req.store.data.settings.startOfWeek ?? 0;
   const start = weekStart(req.query.week, startDay);
   const dates = weekDates(start);
 
@@ -134,7 +198,7 @@ app.get('/api/bootstrap', wrap(async (req, res) => {
     today: isoDate(new Date()),
     weekOf: start,
     dates,
-    recipes: store.data.recipes.map((r) => ({
+    recipes: req.store.data.recipes.map((r) => ({
       id: r.id, title: r.title, tags: r.tags || [], time: r.time || '',
       servings: r.servings || '', source: r.source || '',
       image: r.image || '',
@@ -143,18 +207,18 @@ app.get('/api/bootstrap', wrap(async (req, res) => {
     })),
     // The shelves that actually hold something, plus the ones we always offer,
     // so the folder view can stand a recipe up in an empty category too.
-    categories: categories.summarize(store.data.recipes),
+    categories: categories.summarize(req.store.data.recipes),
     categoryChoices: categories.CATEGORIES,
-    plan: Object.fromEntries(dates.map((d) => [d, (store.data.plan[d] || []).map((m) => ({
-      ...m, title: recipeById(m.recipeId)?.title || 'Deleted recipe',
+    plan: Object.fromEntries(dates.map((d) => [d, (req.store.data.plan[d] || []).map((m) => ({
+      ...m, title: recipeById(req.store, m.recipeId)?.title || 'Deleted recipe',
     }))])),
-    settings: store.data.settings,
+    settings: req.store.data.settings,
     anylist: { configured: anylist.configured() },
   });
 }));
 
 app.get('/api/recipes/:id', wrap(async (req, res) => {
-  const recipe = recipeById(req.params.id);
+  const recipe = recipeById(req.store, req.params.id);
   if (!recipe) return res.status(404).json({ error: 'That recipe is gone.' });
   res.json({
     ...recipe,
@@ -186,24 +250,24 @@ function cleanRecipe(body) {
 app.post('/api/recipes', wrap(async (req, res) => {
   const fields = cleanRecipe(req.body);
   // Keep our own copy so the picture survives the source site reorganising.
-  fields.image = await images.cacheRemote(fields.image);
+  fields.image = await req.images.cacheRemote(fields.image);
   const recipe = { id: id(), createdAt: new Date().toISOString(), ...fields };
-  await store.update((d) => d.recipes.push(recipe));
+  await req.store.update((d) => d.recipes.push(recipe));
   res.status(201).json(recipe);
 }));
 
 app.put('/api/recipes/:id', wrap(async (req, res) => {
-  const existing = recipeById(req.params.id);
+  const existing = recipeById(req.store, req.params.id);
   if (!existing) return res.status(404).json({ error: 'That recipe is gone.' });
   const fields = cleanRecipe(req.body);
-  fields.image = await images.cacheRemote(fields.image);
-  if (existing.image && existing.image !== fields.image) images.remove(existing.image);
-  await store.update(() => Object.assign(existing, fields));
+  fields.image = await req.images.cacheRemote(fields.image);
+  if (existing.image && existing.image !== fields.image) req.images.remove(existing.image);
+  await req.store.update(() => Object.assign(existing, fields));
   res.json(existing);
 }));
 
 app.delete('/api/recipes/:id', wrap(async (req, res) => {
-  const recipe = recipeById(req.params.id);
+  const recipe = recipeById(req.store, req.params.id);
   if (!recipe) return res.status(404).json({ error: 'That recipe is already gone.' });
 
   // Everything needed to undo, captured before anything is removed. The photo
@@ -215,7 +279,7 @@ app.delete('/api/recipes/:id', wrap(async (req, res) => {
     placements: [],
   };
 
-  await store.update((d) => {
+  await req.store.update((d) => {
     d.recipes = d.recipes.filter((r) => r.id !== req.params.id);
     for (const date of Object.keys(d.plan)) {
       for (const meal of d.plan[date]) {
@@ -240,7 +304,7 @@ app.post('/api/recipes/restore', wrap(async (req, res) => {
   }
   const placements = Array.isArray(req.body.placements) ? req.body.placements : [];
 
-  await store.update((d) => {
+  await req.store.update((d) => {
     if (!d.recipes.some((r) => r.id === incoming.id)) d.recipes.push(incoming);
     for (const { date, meal } of placements) {
       if (!/^\d{4}-\d{2}-\d{2}$/.test(String(date))) continue;
@@ -254,7 +318,7 @@ app.post('/api/recipes/restore', wrap(async (req, res) => {
 
 /** Delete photos no recipe refers to any more. */
 app.post('/api/images/tidy', wrap(async (req, res) => {
-  res.json({ removed: await images.collectGarbage(store.data.recipes) });
+  res.json({ removed: await req.images.collectGarbage(req.store.data.recipes) });
 }));
 
 app.post('/api/recipes/import', wrap(async (req, res) => {
@@ -267,10 +331,10 @@ app.post('/api/recipes/import', wrap(async (req, res) => {
 app.post('/api/plan', wrap(async (req, res) => {
   const date = String(req.body.date || '');
   if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return res.status(400).json({ error: 'Pick a day first.' });
-  if (!recipeById(req.body.recipeId)) return res.status(404).json({ error: 'That recipe is gone.' });
+  if (!recipeById(req.store, req.body.recipeId)) return res.status(404).json({ error: 'That recipe is gone.' });
 
   const meal = { id: id(), recipeId: req.body.recipeId, scale: cleanScale(req.body.scale) };
-  await store.update((d) => {
+  await req.store.update((d) => {
     d.plan[date] = d.plan[date] || [];
     d.plan[date].push(meal);
   });
@@ -278,7 +342,7 @@ app.post('/api/plan', wrap(async (req, res) => {
 }));
 
 app.patch('/api/plan/:mealId', wrap(async (req, res) => {
-  await store.update((d) => {
+  await req.store.update((d) => {
     for (const [date, meals] of Object.entries(d.plan)) {
       const meal = meals.find((m) => m.id === req.params.mealId);
       if (!meal) continue;
@@ -296,7 +360,7 @@ app.patch('/api/plan/:mealId', wrap(async (req, res) => {
 }));
 
 app.delete('/api/plan/:mealId', wrap(async (req, res) => {
-  await store.update((d) => {
+  await req.store.update((d) => {
     for (const [date, meals] of Object.entries(d.plan)) {
       const next = meals.filter((m) => m.id !== req.params.mealId);
       if (next.length !== meals.length) {
@@ -310,8 +374,8 @@ app.delete('/api/plan/:mealId', wrap(async (req, res) => {
 }));
 
 app.post('/api/plan/clear', wrap(async (req, res) => {
-  const start = weekStart(req.body.week, store.data.settings.startOfWeek ?? 0);
-  await store.update((d) => {
+  const start = weekStart(req.body.week, req.store.data.settings.startOfWeek ?? 0);
+  await req.store.update((d) => {
     for (const date of weekDates(start)) delete d.plan[date];
     delete d.checked[start];
   });
@@ -324,7 +388,7 @@ app.post('/api/plan/clear', wrap(async (req, res) => {
  * eating the same rotation as last week.
  */
 app.post('/api/plan/copy', wrap(async (req, res) => {
-  const startDay = store.data.settings.startOfWeek ?? 0;
+  const startDay = req.store.data.settings.startOfWeek ?? 0;
   const to = weekStart(req.body.to, startDay);
 
   let from = req.body.from ? weekStart(req.body.from, startDay) : null;
@@ -340,7 +404,7 @@ app.post('/api/plan/copy', wrap(async (req, res) => {
   const replace = req.body.replace === true;
 
   let copied = 0;
-  await store.update((d) => {
+  await req.store.update((d) => {
     for (let i = 0; i < 7; i += 1) {
       const source = d.plan[sourceDates[i]] || [];
       if (replace) delete d.plan[targetDates[i]];
@@ -367,14 +431,14 @@ app.post('/api/plan/copy', wrap(async (req, res) => {
 
 /** Which recent weeks actually have meals, so the UI can offer them. */
 app.get('/api/plan/weeks', wrap(async (req, res) => {
-  const startDay = store.data.settings.startOfWeek ?? 0;
+  const startDay = req.store.data.settings.startOfWeek ?? 0;
   const current = weekStart(req.query.week, startDay);
   const out = [];
   for (let back = 1; back <= 8; back += 1) {
     const d = new Date(`${current}T12:00:00`);
     d.setDate(d.getDate() - (7 * back));
     const start = weekStart(isoDate(d), startDay);
-    const count = weekDates(start).reduce((n, date) => n + (store.data.plan[date]?.length || 0), 0);
+    const count = weekDates(start).reduce((n, date) => n + (req.store.data.plan[date]?.length || 0), 0);
     if (count) out.push({ weekOf: start, meals: count });
   }
   res.json({ weeks: out });
@@ -382,8 +446,8 @@ app.get('/api/plan/weeks', wrap(async (req, res) => {
 
 /* ----------------------------------------------------------- shopping ---- */
 
-function buildList(start) {
-  const items = consolidate(mealsForWeek(start));
+function buildList(store, start) {
+  const items = consolidate(mealsForWeek(store, start));
   const checked = store.data.checked[start] || {};
   const pantry = new Set(store.data.settings.pantry || []);
   const lastExport = [...store.data.exports].reverse().find((e) => e.weekOf === start) || null;
@@ -409,12 +473,12 @@ function buildList(start) {
 }
 
 app.get('/api/list', wrap(async (req, res) => {
-  res.json(buildList(weekStart(req.query.week, store.data.settings.startOfWeek ?? 0)));
+  res.json(buildList(req.store, weekStart(req.query.week, req.store.data.settings.startOfWeek ?? 0)));
 }));
 
 app.put('/api/list/include', wrap(async (req, res) => {
-  const start = weekStart(req.body.week, store.data.settings.startOfWeek ?? 0);
-  await store.update((d) => {
+  const start = weekStart(req.body.week, req.store.data.settings.startOfWeek ?? 0);
+  await req.store.update((d) => {
     d.checked[start] = d.checked[start] || {};
     if (Array.isArray(req.body.keys)) {
       for (const key of req.body.keys) d.checked[start][key] = Boolean(req.body.include);
@@ -432,11 +496,11 @@ app.get('/api/anylist/lists', wrap(async (req, res) => {
 }));
 
 app.post('/api/anylist/export', wrap(async (req, res) => {
-  const start = weekStart(req.body.week, store.data.settings.startOfWeek ?? 0);
-  const listName = String(req.body.listName || store.data.settings.listName || '').trim();
+  const start = weekStart(req.body.week, req.store.data.settings.startOfWeek ?? 0);
+  const listName = String(req.body.listName || req.store.data.settings.listName || '').trim();
   if (!listName) return res.status(400).json({ error: 'Choose which AnyList list to add to.' });
 
-  const list = buildList(start);
+  const list = buildList(req.store, start);
   let chosen = list.items.filter((i) => i.include);
   if (req.body.onlyNew) chosen = chosen.filter((i) => !i.exportedBefore);
 
@@ -455,7 +519,7 @@ app.post('/api/anylist/export', wrap(async (req, res) => {
     skipExisting: req.body.skipExisting !== false,
   });
 
-  await store.update((d) => {
+  await req.store.update((d) => {
     d.settings.listName = listName;
     d.exports.push({
       id: id(),
@@ -480,15 +544,35 @@ app.post('/api/anylist/export', wrap(async (req, res) => {
  */
 app.get('/api/whoami', (req, res) => {
   const guarded = Boolean(process.env.CF_ACCESS_TEAM && process.env.CF_ACCESS_AUD);
+  // Only ever what this request can prove it is entitled to. Falling back to
+  // "the first household" here would hand its name to anyone who asked.
+  const mine = guarded
+    ? (req.user ? registry.forEmail(req.user.email) : [])
+    : registry.all().slice(0, 1);
+  const current = resolveHousehold(req);
+
   res.json({
     authRequired: guarded,
     user: req.user && !req.user.local ? req.user : null,
+    // Only ever the households this person is actually in, never the roster.
+    // The interface shows a switcher when there is more than one and says
+    // nothing about the concept at all when there is one, which is most people.
+    households: mine.map((h) => ({ id: h.id, name: h.name })),
+    household: current ? { id: current.id, name: current.name } : null,
   });
 });
 
-/** For the systemd watchdog and any uptime check you point at it. */
+/**
+ * For the systemd watchdog and any uptime check you point at it.
+ * Deliberately says nothing about any household: it answers before one has been
+ * resolved, and a health probe has no business reading a family's recipe count.
+ */
 app.get('/api/healthz', (req, res) => {
-  res.json({ ok: true, recipes: store.data.recipes.length, uptime: Math.round(process.uptime()) });
+  res.json({
+    ok: true,
+    households: registry.all().length,
+    uptime: Math.round(process.uptime()),
+  });
 });
 
 /* -------------------------------------------------------------- pantry -- */
@@ -503,7 +587,7 @@ app.get('/api/healthz', (req, res) => {
  * uses to add amounts together.
  */
 app.get('/api/pantry', wrap(async (req, res) => {
-  res.json({ pantry: (store.data.settings.pantry || []).slice().sort() });
+  res.json({ pantry: (req.store.data.settings.pantry || []).slice().sort() });
 }));
 
 app.put('/api/pantry', wrap(async (req, res) => {
@@ -514,7 +598,7 @@ app.put('/api/pantry', wrap(async (req, res) => {
   if (!clean.length) return res.status(400).json({ error: 'Nothing to add.' });
   const keep = req.body.inPantry !== false;
 
-  await store.update((d) => {
+  await req.store.update((d) => {
     const set = new Set(d.settings.pantry || []);
     for (const key of clean) {
       if (keep) set.add(key); else set.delete(key);
@@ -531,13 +615,13 @@ app.put('/api/pantry', wrap(async (req, res) => {
     }
   });
 
-  res.json({ pantry: store.data.settings.pantry });
+  res.json({ pantry: req.store.data.settings.pantry });
 }));
 
 /* -------------------------------------------------------------- photos -- */
 
 app.post('/api/images', wrap(async (req, res) => {
-  res.status(201).json({ url: await images.saveDataUrl(req.body.dataUrl) });
+  res.status(201).json({ url: await req.images.saveDataUrl(req.body.dataUrl) });
 }));
 
 /* ------------------------------------------------------------- backups -- */
@@ -546,7 +630,7 @@ app.get('/api/backup', wrap(async (req, res) => {
   const stamp = new Date().toISOString().slice(0, 10);
   res.setHeader('content-disposition', `attachment; filename="week-of-meals-${stamp}.json"`);
   res.setHeader('content-type', 'application/json');
-  res.send(JSON.stringify(store.data, null, 2));
+  res.send(JSON.stringify(req.store.data, null, 2));
 }));
 
 app.post('/api/restore', wrap(async (req, res) => {
@@ -554,36 +638,46 @@ app.post('/api/restore', wrap(async (req, res) => {
   if (!incoming || !Array.isArray(incoming.recipes)) {
     return res.status(400).json({ error: "That file doesn't look like a Week of Meals backup." });
   }
-  await store.backup(); // snapshot what is here now, in case the restore was a mistake
-  await store.update((d) => {
+  await req.store.backup(); // snapshot what is here now, in case the restore was a mistake
+  await req.store.update((d) => {
     d.recipes = incoming.recipes;
     d.plan = incoming.plan || {};
     d.checked = incoming.checked || {};
     d.exports = incoming.exports || [];
     d.settings = { ...d.settings, ...(incoming.settings || {}) };
   });
-  res.json({ ok: true, recipes: store.data.recipes.length });
+  res.json({ ok: true, recipes: req.store.data.recipes.length });
 }));
 
 /* ------------------------------------------------------------ settings -- */
 
 app.put('/api/settings', wrap(async (req, res) => {
-  await store.update((d) => {
+  await req.store.update((d) => {
     if (req.body.listName !== undefined) d.settings.listName = String(req.body.listName);
     if (req.body.startOfWeek !== undefined) d.settings.startOfWeek = Number(req.body.startOfWeek) ? 1 : 0;
   });
-  res.json(store.data.settings);
+  res.json(req.store.data.settings);
 }));
 
 /* ------------------------------------------------------------- startup -- */
 
 async function start() {
-  await store.ready();
-  await store.backup();
+  // Snapshot every household before serving, not just "the" one. This is the
+  // insurance that makes an upgrade safe to roll back.
+  for (const household of registry.all()) {
+    const { store } = forHousehold(household.id);
+    await store.ready();
+    await store.backup();
+  }
+
   app.listen(PORT, '0.0.0.0', () => {
+    const households = registry.all();
     console.log(`\n  Meal plan running at http://localhost:${PORT}`);
-    console.log(`  Storage: ${kind === 's3' ? describe : `file ${describe}`}`);
-      console.log(`  Sign-in: ${process.env.CF_ACCESS_TEAM ? `Cloudflare Access (${process.env.CF_ACCESS_TEAM})` : 'none — do not expose this port'}`);
+    console.log(`  Storage: ${describe}`);
+    console.log(`  Households: ${households.length
+      ? households.map((h) => `${h.name} (${h.members.length} member${h.members.length === 1 ? '' : 's'})`).join(', ')
+      : 'none yet'}`);
+    console.log(`  Sign-in: ${process.env.CF_ACCESS_TEAM ? `Cloudflare Access (${process.env.CF_ACCESS_TEAM})` : 'none — do not expose this port'}`);
     console.log(anylist.configured()
       ? '  AnyList: credentials found\n'
       : '  AnyList: not configured (export is disabled until you add credentials to .env)\n');
@@ -599,4 +693,6 @@ if (require.main === module) {
   });
 }
 
-module.exports = { app, store, start, weekStart, weekDates, buildList };
+module.exports = {
+  app, registry, forHousehold, start, weekStart, weekDates, buildList,
+};

@@ -2,7 +2,8 @@
 #
 # Nightly backup. Run by weekofmeals-backup.timer at 03:20.
 #
-# Writes a dated tar.gz of the database and photos into
+# Writes a dated tar.gz of the registry, every household's database, and the
+# photos into
 # /var/lib/weekofmeals/backups, prunes anything older than BACKUP_KEEP_DAYS,
 # and if BACKUP_REMOTE is set, copies it off the machine with rclone.
 #
@@ -22,22 +23,37 @@ ARCHIVE="$BACKUP_DIR/week-of-meals-$STAMP.tar.gz"
 
 mkdir -p "$BACKUP_DIR"
 
-[ -f "$DATA_DIR/db.json" ] || { echo "No database at $DATA_DIR/db.json; nothing to back up."; exit 0; }
+[ -f "$DATA_DIR/households.json" ] || { echo "No registry at $DATA_DIR/households.json; nothing to back up."; exit 0; }
 
 # Refuse to archive a corrupt database. A backup of unreadable JSON is worse
 # than no backup, because it quietly replaces a good one during rotation.
-if ! node -e "JSON.parse(require('fs').readFileSync('$DATA_DIR/db.json','utf8'))" 2>/dev/null; then
-  echo "db.json does not parse as JSON. Refusing to back up over a good archive." >&2
+#
+# Every household is checked, not just the registry: one unreadable household
+# file is exactly the case where you most want last night's archive intact.
+RECIPES=$(node -e '
+  const fs = require("fs"), path = require("path");
+  const root = process.argv[1];
+  const registry = JSON.parse(fs.readFileSync(path.join(root, "households.json"), "utf8"));
+  let total = 0;
+  for (const h of registry.households || []) {
+    const file = path.join(root, "households", h.id + ".json");
+    if (!fs.existsSync(file)) continue;
+    total += (JSON.parse(fs.readFileSync(file, "utf8")).recipes || []).length;
+  }
+  process.stdout.write(String(total));
+' "$DATA_DIR") || {
+  echo "The database does not parse as JSON. Refusing to back up over a good archive." >&2
   exit 1
-fi
+}
 
-RECIPES=$(node -e "process.stdout.write(String(JSON.parse(require('fs').readFileSync('$DATA_DIR/db.json','utf8')).recipes.length))")
+HOUSEHOLDS=$(node -e 'process.stdout.write(String((JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")).households||[]).length))' "$DATA_DIR/households.json")
 
 tar -czf "$ARCHIVE" -C "$DATA_DIR" \
-  db.json \
+  households.json \
+  $( [ -d "$DATA_DIR/households" ] && echo households ) \
   $( [ -d "$DATA_DIR/images" ] && echo images )
 
-echo "Wrote $ARCHIVE ($(du -h "$ARCHIVE" | cut -f1), $RECIPES recipes)"
+echo "Wrote $ARCHIVE ($(du -h "$ARCHIVE" | cut -f1), $HOUSEHOLDS household(s), $RECIPES recipes)"
 
 # Prune local archives, but never leave zero behind.
 find "$BACKUP_DIR" -name 'week-of-meals-*.tar.gz' -mtime "+$KEEP_DAYS" -print -delete 2>/dev/null || true

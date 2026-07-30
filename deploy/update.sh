@@ -20,6 +20,14 @@ SRC="$(cd "$(dirname "$0")/.." && pwd)"
 echo "==> Snapshotting data before anything else"
 STAMP=$(date +%Y%m%d-%H%M%S)
 install -d -m 0750 -o weekofmeals -g weekofmeals "$DATA_DIR/backups"
+# Snapshot the registry and every household before swapping code under them.
+cp "$DATA_DIR/households.json" "$DATA_DIR/backups/households-preupdate-$STAMP.json" 2>/dev/null || true
+if [ -d "$DATA_DIR/households" ]; then
+  mkdir -p "$DATA_DIR/backups/preupdate-$STAMP"
+  cp "$DATA_DIR"/households/*.json "$DATA_DIR/backups/preupdate-$STAMP/" 2>/dev/null || true
+fi
+# Pre-household layouts still have a single db.json; keep copying it so an
+# update that runs before the first migration is still snapshotted.
 cp "$DATA_DIR/db.json" "$DATA_DIR/backups/db-preupdate-$STAMP.json" 2>/dev/null || true
 
 echo "==> Keeping the current release for rollback"

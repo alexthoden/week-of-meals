@@ -29,8 +29,16 @@ const EMPTY = {
 };
 
 class Store {
-  constructor(file) {
+  /**
+   * @param {string} file
+   * @param {object} [options]
+   * @param {string} [options.backupDir]  defaults to a `backups` directory
+   *   beside the file. Households pass their own, so one family's backups do
+   *   not pile into the same folder as another's and get culled by its cap.
+   */
+  constructor(file, { backupDir } = {}) {
     this.file = file;
+    this.backupDir = backupDir || path.join(path.dirname(file), 'backups');
     this.data = EMPTY;
     this.load();
   }
@@ -64,7 +72,8 @@ class Store {
 
   /** Timestamped copy, kept to the last 10. Cheap insurance. */
   backup() {
-    const dir = path.join(path.dirname(this.file), 'backups');
+    const dir = this.backupDir;
+    if (!fs.existsSync(this.file)) return;
     fs.mkdirSync(dir, { recursive: true });
     const stamp = new Date().toISOString().replace(/[:.]/g, '-');
     fs.copyFileSync(this.file, path.join(dir, `db-${stamp}.json`));

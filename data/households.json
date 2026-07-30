@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "households": [
+    {
+      "id": "fc932481-9f66-47ba-8b14-b6fb7f0d4fea",
+      "name": "Home",
+      "members": [],
+      "createdAt": "2026-07-30T16:54:46.809Z"
+    }
+  ]
+}

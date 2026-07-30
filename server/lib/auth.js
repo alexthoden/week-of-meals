@@ -204,14 +204,26 @@ function middleware(options = {}) {
 
   return async (req, res, next) => {
     const bare = req.originalUrl.split('?')[0];
-    if (publicPaths.some((re) => re.test(req.path) || re.test(bare))) return next();
+    const isPublic = publicPaths.some((re) => re.test(req.path) || re.test(bare));
 
+    /*
+     * Public paths are still identified when they can be, they just are not
+     * required to be.
+     *
+     * They used to return before any verification ran, which meant req.user was
+     * never set on them — so /api/whoami, whose entire job is to say who you
+     * are, could never say. It reported nobody signed in no matter who asked.
+     * Verifying first and only forgiving the failure restores that without
+     * making the endpoint unanswerable when Cloudflare is unreachable, which is
+     * what made it public in the first place.
+     */
     try {
       const claims = await verifyAccessToken(tokenFrom(req), { team, aud, keyStore });
 
       // Belt and braces. Access already applied your policy; this only matters
       // if the two ever drift apart.
       if ((allow.emails.size || allow.domains.size) && !isAllowed(claims.email, allow)) {
+        if (isPublic) return next();
         return res.status(403).json({
           error: `${claims.email} is not on the household list.`,
           code: 'NOT_ALLOWED',
@@ -221,6 +233,7 @@ function middleware(options = {}) {
       req.user = { email: String(claims.email).toLowerCase(), sub: claims.sub };
       return next();
     } catch (err) {
+      if (isPublic) return next();
       return res.status(err.status || 401).json({ error: err.message, code: err.code || 'AUTH' });
     }
   };

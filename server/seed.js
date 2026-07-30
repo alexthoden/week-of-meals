@@ -1,10 +1,16 @@
 'use strict';
 
-const path = require('path');
 const crypto = require('crypto');
-const { Store } = require('./lib/store');
+const storage = require('./lib/storage');
 
-const DATA_FILE = process.env.DATA_FILE || path.join(__dirname, '..', 'data', 'db.json');
+/*
+ * Seeds the first household. With recipes now belonging to a household rather
+ * than to the installation, "seed the database" has to name one; the first is
+ * the only sensible default, and storage.create() will have made it if this is
+ * a fresh checkout.
+ */
+const { registry, forHousehold } = storage.create();
+const household = registry.all()[0] || registry.create({ name: 'Home' });
 
 const RECIPES = [
   {
@@ -235,7 +241,7 @@ const RECIPES = [
   },
 ];
 
-const store = new Store(DATA_FILE);
+const { store } = forHousehold(household.id);
 const existing = new Set(store.data.recipes.map((r) => r.title.toLowerCase()));
 let added = 0;
 
@@ -254,5 +260,5 @@ store.update((d) => {
 });
 
 console.log(added
-  ? `Added ${added} starter recipe${added === 1 ? '' : 's'} to ${DATA_FILE}`
+  ? `Added ${added} starter recipe${added === 1 ? '' : 's'} to ${household.name} (${store.file})`
   : 'Starter recipes were already there, nothing to do.');

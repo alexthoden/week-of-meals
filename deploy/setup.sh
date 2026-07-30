@@ -137,8 +137,8 @@ info "units installed and enabled"
 # ------------------------------------------------------------- first data --
 
 say "7/9  Starter data"
-if [ ! -f "$DATA_DIR/db.json" ]; then
-  sudo -u "$APP_USER" DATA_FILE="$DATA_DIR/db.json" node "$APP_DIR/server/seed.js" >/dev/null
+if [ ! -f "$DATA_DIR/households.json" ]; then
+  sudo -u "$APP_USER" DATA_ROOT="$DATA_DIR" node "$APP_DIR/server/seed.js" >/dev/null
   info "seeded ten starter recipes"
 else
   info "database already exists — not touched"
@@ -187,7 +187,7 @@ cat <<NEXT
   Installed.
 
     code    $APP_DIR
-    data    $DATA_DIR        (db.json, images/, backups/)
+    data    $DATA_DIR        (households.json, households/, images/, backups/)
     config  $ENV_DIR/env
     logs    journalctl -u weekofmeals -f
 
