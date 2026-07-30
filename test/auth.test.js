@@ -275,3 +275,36 @@ test('a rejection on a public path is forgiven and not logged as a refusal', asy
   assert.equal(passed, true, 'whoami must still answer so the page can explain itself');
   assert.deepEqual(lines, [], 'an unauthenticated public call is normal, not a refusal');
 });
+
+test('a mismatched audience logs both values, and never the assertion', async () => {
+  // "They do not match" without the two values is still a hunt through a
+  // dashboard. An AUD tag names an application and cannot authenticate
+  // anything, so it is safe in a log in a way the assertion beside it is not.
+  const { middleware, setLogger } = require('../server/lib/auth');
+  const lines = [];
+  setLogger((m) => lines.push(m));
+  test.after(() => setLogger(() => {}));
+
+  const theirs = 'f'.repeat(64);
+  const token = mint({ aud: [theirs] });
+  const mw = middleware({
+    team: TEAM, aud: AUD, keyStore: store(), env: {},
+  });
+
+  await mw(
+    {
+      path: '/bootstrap',
+      originalUrl: '/api/bootstrap',
+      method: 'GET',
+      get: (h) => (h.toLowerCase() === 'cookie' ? `CF_Authorization=${token}` : undefined),
+    },
+    { status() { return this; }, json() { return this; } },
+    () => { throw new Error('should not have passed'); },
+  );
+
+  assert.equal(lines.length, 1);
+  assert.match(lines[0], /BAD_AUD/);
+  assert.match(lines[0], new RegExp(`configured ${AUD}`), 'should name what the server expects');
+  assert.match(lines[0], new RegExp(theirs), 'and what the assertion actually carries');
+  assert.ok(!lines[0].includes(token), 'but never the assertion itself');
+});

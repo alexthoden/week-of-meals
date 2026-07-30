@@ -165,7 +165,20 @@ async function verifyAccessToken(token, { team, aud, keyStore, now = Date.now() 
   // Without this, an assertion for a different Access application would pass.
   const audiences = Array.isArray(claims.aud) ? claims.aud : [claims.aud];
   if (!audiences.includes(aud)) {
-    throw fail('That Access assertion was issued for a different application.', 'BAD_AUD');
+    const err = fail('That Access assertion was issued for a different application.', 'BAD_AUD');
+    /*
+     * Both values, because "they do not match" without them is still a hunt
+     * through a dashboard. An AUD tag identifies an Access application; it is
+     * not a credential and cannot be used to authenticate, so putting it in the
+     * server's own log is safe in a way the assertion beside it never is.
+     *
+     * Seeing them side by side also names the usual culprits immediately: a tag
+     * copied from the wrong application, a value quoted in an EnvironmentFile
+     * (systemd keeps the quotes), or a second Access application covering the
+     * same hostname and minting the assertion instead.
+     */
+    err.detail = `configured ${aud}, assertion carries ${audiences.filter(Boolean).join(', ') || '(none)'}`;
+    throw err;
   }
 
   const seconds = Math.floor(now / 1000);
@@ -271,7 +284,8 @@ function middleware(options = {}) {
        * expired" into a code you can act on. It carries the code and the path
        * and nothing else — never the assertion, which is a live credential.
        */
-      log(`sign-in refused: ${err.code || 'AUTH'} on ${req.method} ${bare}`);
+      log(`sign-in refused: ${err.code || 'AUTH'} on ${req.method} ${bare}`
+        + (err.detail ? `\n    ${err.detail}` : ''));
       return res.status(err.status || 401).json({ error: err.message, code: err.code || 'AUTH' });
     }
   };

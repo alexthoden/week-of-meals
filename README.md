@@ -187,6 +187,35 @@ becomes household number one, whoever was in `ALLOWED_EMAILS` becomes its
 founding members, and the original is left on disk as `db.json.migrated` so a
 botched upgrade is one `mv` away from being undone.
 
+### When a sign-in is refused
+
+Cloudflare Access authenticates the person; the origin verifies the assertion
+again, because "the edge checked it" is only true of traffic that came through
+the edge. When that second check fails the browser says so and names the cause,
+and the origin logs it:
+
+```bash
+sudo journalctl -u weekofmeals -n 50 | grep 'sign-in refused'
+```
+
+| Code | What it means |
+| --- | --- |
+| `NO_TOKEN` | No `CF_Authorization` cookie reached the origin at all. Usually the page came from a cache without passing Access, or the hostname is not the one the Access application covers. |
+| `BAD_AUD` | A genuine sign-in, minted for a **different Access application**. `CF_ACCESS_AUD` does not match that application's Application Audience tag. The log prints both values. |
+| `BAD_ISS`, `BAD_KID` | `CF_ACCESS_TEAM` names the wrong team. |
+| `EXPIRED`, `NOT_YET` | Genuinely expired, or the machine's clock has drifted — `timedatectl` will say which. |
+| `BAD_SIGNATURE` | The signature did not verify. Treat as a real failure, not a configuration slip. |
+
+`BAD_AUD` is the one most people meet, and it has three usual causes: the tag was
+copied from the wrong application; the value is **quoted** in
+`/etc/weekofmeals/env`, which systemd keeps as part of the value; or a second
+Access application covers the same hostname and is minting the assertion. The
+log line prints the configured tag and the one the assertion carries, so the
+answer is whichever of the two you did not expect.
+
+The assertion itself is never logged. It is a live credential; the AUD tag
+beside it merely names an application and cannot authenticate anything.
+
 ### Categories, and why they are not tags
 
 A recipe has many tags and exactly one category. That is the whole distinction,
