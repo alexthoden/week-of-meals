@@ -133,18 +133,47 @@ intruder, just somebody the list has not caught up with.
 
 Membership is many-to-many, so you can be in your own household and your
 parents'. Almost nobody is, so the interface never mentions the concept until
-you are in two, at which point a switcher appears in Settings.
+you are in two, at which point a switcher appears in Settings. Each household
+keeps its **own AnyList account**, entered in its own Settings — sharing one
+would mean your parents' shopping list arriving in your AnyList.
 
-**Managing membership** is a command on the server, not a screen in the app.
-There is no invite flow and no admin page, because for two families that is a
-lot of surface area for something that changes once a year:
+**Households govern themselves.** Whoever creates one administers it: they can
+invite, remove, rename, and hand the role to somebody else. There is no
+server-wide superuser — Cloudflare Access decides who may reach the application
+at all, and from there each household is its own business.
+
+Somebody signing in for the first time is offered the two ways in, and needs
+nobody's help at a terminal for either:
+
+* **Start a household** — for their own kitchen. They administer it.
+* **Join one** — with an invite code from somebody who already administers one.
+
+Invite codes are eight characters shown as `ABCD-EFGH`, good **once**, for a
+**week**. The alphabet leaves out every pair that looks alike — no `O` or `0`,
+no `I`, `L` or `1` — because they are read off a phone screen and typed by hand.
+An invitation can optionally be **locked to one address**, which makes it inert
+if the message goes astray; leave it blank for a code that is simplest to text.
+
+Two rules exist to stop a household becoming unmanageable, and both are refusals
+rather than warnings after the fact: an administrator cannot be removed without
+being demoted first, and the last administrator cannot step down or leave while
+anybody else is still in the household. A household that ends up with nobody in
+charge anyway — a registry migrated from before any of this existed — can be
+taken over by any of its members.
+
+Joining somebody else's household never makes you an administrator of it, and a
+household you are not in is a 404 rather than a 403: it should not be possible
+to tell that it exists.
+
+**The command line remains** for the person who owns the machine, as break-glass
+for the case where the last administrator has gone:
 
 ```
 npm run household -- list
-npm run household -- join sister@example.com          # one household: no name needed
-npm run household -- add Parents mom@example.com dad@example.com
-npm run household -- join Parents sister@example.com  # say which, when there are several
-npm run household -- leave Parents sister@example.com
+npm run household -- admin me@example.com            # grant, for when nobody can
+npm run household -- admin them@example.com --revoke
+npm run household -- join sister@example.com         # one household: no name needed
+npm run household -- add Parents mum@example.com
 npm run household -- rename Parents --to Mum and Dad
 ```
 
@@ -153,15 +182,14 @@ one is where things go wrong: `npm run` does not reliably keep quoting intact,
 and a name like `Shrek's Swamp` contains an apostrophe that opens a shell quote
 the terminal then waits forever to have closed — the command looks like it has
 hung when in fact it never ran. Where a name is genuinely needed, the id from
-`list` never has this problem. Otherwise anything containing an `@` is treated
-as an address and everything else is the name, so quotes are optional.
+`list` never has this problem.
 
 **On a deployed server, run it against the real data directory**, not from a
 source checkout:
 
 ```bash
 sudo -u weekofmeals DATA_ROOT=/var/lib/weekofmeals \
-  node /opt/weekofmeals/server/household.js join Parents mum@example.com
+  node /opt/weekofmeals/server/household.js list
 ```
 
 This is worth being careful about. The registry path comes from `DATA_ROOT`, so
@@ -169,10 +197,6 @@ running the command in a checkout edits `./data/households.json` — a different
 usually empty registry that the running server never reads. It would report
 success and change nothing. Every run therefore prints the file it touched, and
 warns loudly if it had to create one.
-
-It edits `households.json` through the registry and writes atomically, so the
-file parses by construction. Hand-editing it works too, right up until the
-trailing comma that stops the server booting.
 
 **Photos are served per household**, which has one consequence worth knowing:
 their responses are `Cache-Control: private`, so Cloudflare will not cache them

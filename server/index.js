@@ -10,6 +10,7 @@ const auth = require('./lib/auth');
 const { consolidate, AISLE_ORDER } = require('./lib/consolidate');
 const { parseIngredient } = require('./lib/parse');
 const categories = require('./lib/categories');
+const households = require('./lib/households');
 const { importFromUrl } = require('./lib/import');
 
 const PORT = Number(process.env.PORT) || 4321;
@@ -92,11 +93,239 @@ function withHousehold(req, res, next) {
   return scoped.store.refresh().then(() => next()).catch(next);
 }
 
+/*
+ * Endpoints that must answer before the caller has a household.
+ *
+ * whoami and healthz because the page cannot bootstrap without them, and
+ * everything under /households because that is where somebody with no
+ * household goes to get one. Running those through withHousehold would 403
+ * exactly the people they exist to serve.
+ */
+const HOUSEHOLDLESS = /^\/(whoami|healthz|households(\/.*)?)$/;
+
 app.use('/api', (req, res, next) => {
-  // The bootstrap endpoints have to answer before a household is known.
-  if (/^\/(whoami|healthz)$/.test(req.path)) return next();
+  if (HOUSEHOLDLESS.test(req.path)) return next();
   return withHousehold(req, res, next);
 });
+
+/**
+ * Identify the caller for a self-service action.
+ *
+ * Unguarded — a laptop, the home wifi — there is no verified email, so there is
+ * nobody to attribute a household to and no way to tell two people apart.
+ * Governing yourself needs an identity, so these endpoints say so plainly
+ * rather than pretending.
+ */
+function requireIdentity(req, res) {
+  if (!req.user) {
+    res.status(401).json({ error: 'Sign in first.', code: 'NO_TOKEN' });
+    return null;
+  }
+  if (req.user.local) {
+    res.status(400).json({
+      error: 'Households manage themselves only when sign-in is switched on. '
+        + 'Without it there is one household and everyone shares it.',
+      code: 'NO_SIGNIN',
+    });
+    return null;
+  }
+  return req.user.email;
+}
+
+/** Same, plus: you administer this household. */
+function requireAdmin(req, res) {
+  const email = requireIdentity(req, res);
+  if (!email) return null;
+
+  const household = registry.byId(req.params.id);
+  if (!household || !registry.isMember(household.id, email)) {
+    // Not "forbidden": a household you are not in should not be distinguishable
+    // from one that does not exist.
+    res.status(404).json({ error: 'That household is gone.', code: 'NO_HOUSEHOLD' });
+    return null;
+  }
+  if (!registry.isAdmin(household.id, email)) {
+    res.status(403).json({
+      error: 'Only an administrator of this household can do that.',
+      code: 'NOT_ADMIN',
+    });
+    return null;
+  }
+  return { email, household };
+}
+
+function publicHousehold(household, email) {
+  return {
+    id: household.id,
+    name: household.name,
+    members: household.members,
+    admins: household.admins,
+    isAdmin: registry.isAdmin(household.id, email),
+    createdAt: household.createdAt,
+  };
+}
+
+/* --------------------------------------------------------- households -- */
+
+/** Start one. Whoever does so administers it. */
+app.post('/api/households', wrap(async (req, res) => {
+  const email = requireIdentity(req, res);
+  if (!email) return undefined;
+
+  const name = String(req.body.name || '').trim();
+  if (!name) return res.status(400).json({ error: 'Give the household a name.', code: 'NO_NAME' });
+
+  const household = registry.create({ name: name.slice(0, 60), createdBy: email });
+  return res.status(201).json({ household: publicHousehold(household, email) });
+}));
+
+/** Spend an invite code. */
+app.post('/api/households/join', wrap(async (req, res) => {
+  const email = requireIdentity(req, res);
+  if (!email) return undefined;
+
+  try {
+    const household = registry.redeemInvite(req.body.code, email);
+    return res.json({ household: publicHousehold(household, email) });
+  } catch (err) {
+    return res.status(err.status || 400).json({ error: err.message, code: err.code || 'BAD_CODE' });
+  }
+}));
+
+/** Who is in it, and — for an administrator — the invitations outstanding. */
+app.get('/api/households/:id', wrap(async (req, res) => {
+  const email = requireIdentity(req, res);
+  if (!email) return undefined;
+
+  const household = registry.byId(req.params.id);
+  if (!household || !registry.isMember(household.id, email)) {
+    return res.status(404).json({ error: 'That household is gone.', code: 'NO_HOUSEHOLD' });
+  }
+
+  const body = publicHousehold(household, email);
+  if (body.isAdmin) {
+    body.invites = registry.invitesFor(household.id).map((i) => ({
+      code: households.formatCode(i.code),
+      email: i.email,
+      expiresAt: i.expiresAt,
+    }));
+  }
+  // A household left without an administrator can be taken over by a member.
+  body.claimable = household.admins.length === 0;
+  return res.json(body);
+}));
+
+app.post('/api/households/:id/invites', wrap(async (req, res) => {
+  const who = requireAdmin(req, res);
+  if (!who) return undefined;
+
+  const invite = registry.createInvite({
+    householdId: who.household.id,
+    createdBy: who.email,
+    email: req.body.email,
+  });
+  return res.status(201).json({
+    code: households.formatCode(invite.code),
+    email: invite.email,
+    expiresAt: invite.expiresAt,
+  });
+}));
+
+app.delete('/api/households/:id/invites/:code', wrap(async (req, res) => {
+  const who = requireAdmin(req, res);
+  if (!who) return undefined;
+  registry.revokeInvite(req.params.code);
+  return res.json({ ok: true });
+}));
+
+app.delete('/api/households/:id/members/:email', wrap(async (req, res) => {
+  const who = requireAdmin(req, res);
+  if (!who) return undefined;
+
+  const target = String(req.params.email || '').toLowerCase();
+  if (target === who.email) {
+    return res.status(400).json({
+      error: 'Use "leave this household" to remove yourself.',
+      code: 'USE_LEAVE',
+    });
+  }
+  if (registry.isAdmin(who.household.id, target)) {
+    return res.status(409).json({
+      error: 'Take away their administrator role first.',
+      code: 'IS_ADMIN',
+    });
+  }
+
+  registry.removeMember(who.household.id, target);
+  return res.json({ household: publicHousehold(registry.byId(who.household.id), who.email) });
+}));
+
+app.put('/api/households/:id/members/:email/admin', wrap(async (req, res) => {
+  const who = requireAdmin(req, res);
+  if (!who) return undefined;
+
+  try {
+    const household = registry.setAdmin(
+      who.household.id,
+      String(req.params.email || ''),
+      req.body.admin !== false,
+    );
+    return res.json({ household: publicHousehold(household, who.email) });
+  } catch (err) {
+    return res.status(err.status || 400).json({ error: err.message, code: err.code });
+  }
+}));
+
+app.put('/api/households/:id/name', wrap(async (req, res) => {
+  const who = requireAdmin(req, res);
+  if (!who) return undefined;
+  try {
+    const household = registry.rename(who.household.id, req.body.name);
+    return res.json({ household: publicHousehold(household, who.email) });
+  } catch (err) {
+    return res.status(err.status || 400).json({ error: err.message, code: err.code });
+  }
+}));
+
+/** Take charge of a household that has nobody in charge. */
+app.post('/api/households/:id/claim', wrap(async (req, res) => {
+  const email = requireIdentity(req, res);
+  if (!email) return undefined;
+  try {
+    const household = registry.claim(req.params.id, email);
+    return res.json({ household: publicHousehold(household, email) });
+  } catch (err) {
+    return res.status(err.status || 400).json({ error: err.message, code: err.code });
+  }
+}));
+
+/**
+ * Leave.
+ *
+ * The recipes stay where they are — they belong to the household, not to you —
+ * and the last administrator is stopped, because a household nobody can
+ * administer is a worse outcome than being asked to hand over first.
+ */
+app.post('/api/households/:id/leave', wrap(async (req, res) => {
+  const email = requireIdentity(req, res);
+  if (!email) return undefined;
+
+  const household = registry.byId(req.params.id);
+  if (!household || !registry.isMember(household.id, email)) {
+    return res.status(404).json({ error: 'That household is gone.', code: 'NO_HOUSEHOLD' });
+  }
+
+  const admins = household.admins.map((a) => a.toLowerCase());
+  if (admins.includes(email) && admins.length === 1 && household.members.length > 1) {
+    return res.status(409).json({
+      error: 'You are the only administrator. Make somebody else one before you leave.',
+      code: 'LAST_ADMIN',
+    });
+  }
+
+  registry.removeMember(household.id, email);
+  return res.json({ ok: true });
+}));
 
 /**
  * Photos, served per household.
@@ -625,7 +854,11 @@ app.get('/api/whoami', (req, res) => {
     // Only ever the households this person is actually in, never the roster.
     // The interface shows a switcher when there is more than one and says
     // nothing about the concept at all when there is one, which is most people.
-    households: mine.map((h) => ({ id: h.id, name: h.name })),
+    households: mine.map((h) => ({
+      id: h.id,
+      name: h.name,
+      isAdmin: req.user ? registry.isAdmin(h.id, req.user.email) : false,
+    })),
     household: current ? { id: current.id, name: current.name } : null,
   });
 });

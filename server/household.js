@@ -120,8 +120,14 @@ function find(needle) {
 
 function describe(h) {
   const { store } = forHousehold(h.id);
-  const members = h.members.length ? h.members.join(', ') : '(nobody yet)';
-  return `${h.name}\n  id       ${h.id}\n  members  ${members}\n  recipes  ${store.data.recipes.length}`;
+  const admins = new Set((h.admins || []).map((a) => a.toLowerCase()));
+  const members = h.members.length
+    ? h.members.map((m) => (admins.has(m.toLowerCase()) ? `${m} (admin)` : m)).join(', ')
+    : '(nobody yet)';
+  const warning = h.members.length && !admins.size
+    ? '\n  ⚠        nobody administers this household; a member can take charge in the app'
+    : '';
+  return `${h.name}\n  id       ${h.id}\n  members  ${members}\n  recipes  ${store.data.recipes.length}${warning}`;
 }
 
 const commands = {
@@ -161,6 +167,29 @@ const commands = {
   },
 
   /**
+   * Grant or revoke administrator rights.
+   *
+   * Households govern themselves in the app, so this is break-glass: for the
+   * person who owns the machine, when the last administrator has left or a
+   * registry predates the whole idea and nobody can invite anyone.
+   *
+   *   household admin me@example.com
+   *   household admin me@example.com --revoke
+   */
+  admin(...args) {
+    const revoke = args.includes('--revoke');
+    const { name, emails } = split(args.filter((a) => a !== '--revoke'));
+    if (!emails.length) throw new Error('Give the email address to promote.');
+    const household = target(name);
+
+    for (const email of emails) {
+      if (!revoke) registry.addMember(household.id, email, { admin: true });
+      else registry.setAdmin(household.id, email, false);
+    }
+    return `${where()}\nUpdated:\n\n${describe(registry.byId(household.id))}`;
+  },
+
+  /**
    * Two names on one line, either of which may contain spaces, so they are
    * separated by `--to` rather than by position:
    *   household rename Shrek's Swamp --to Fiona's Castle
@@ -193,7 +222,9 @@ function main(argv) {
       + '  npm run household -- join sister@example.com        (one household: no name needed)\n'
       + '  npm run household -- join Parents sister@example.com  (say which, when there are several)\n'
       + '  npm run household -- leave Parents sister@example.com\n'
-      + '  npm run household -- rename Parents --to Mum and Dad\n\n'
+      + '  npm run household -- rename Parents --to Mum and Dad\n'
+      + '  npm run household -- admin me@example.com          (break-glass: grant admin)\n'
+      + '  npm run household -- admin them@example.com --revoke\n\n'
       + 'On a deployed server, run it against the real data directory:\n'
       + '  sudo -u weekofmeals DATA_ROOT=/var/lib/weekofmeals \\\n'
       + '    node /opt/weekofmeals/server/household.js list';

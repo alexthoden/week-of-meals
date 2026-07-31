@@ -1337,6 +1337,96 @@ main {
 }
 
 
+/* ========================================================== households == */
+/*
+  Onboarding and the household panel. The first screen somebody sees when they
+  have nowhere to put a recipe yet, so it is given room rather than squeezed
+  into the empty-state box the rest of the app uses for "nothing here".
+*/
+
+.onboard {
+  max-width: 460px;
+  margin: 24px auto 0;
+}
+.onboard h2 {
+  font-family: var(--display);
+  font-size: 22px;
+  margin: 6px 0 8px;
+}
+.onboard .sub { color: var(--sage); margin: 0 0 22px; }
+.onboard .sub strong { color: var(--paper); font-weight: 600; }
+
+.onboard-card {
+  background: var(--paper);
+  color: var(--ink);
+  border: 1px solid var(--paper-edge);
+  border-radius: var(--r-md);
+  padding: 18px;
+  margin-bottom: 14px;
+}
+.onboard-card h3 {
+  margin: 0 0 4px;
+  font-family: var(--display);
+  font-size: 16px;
+}
+.onboard-card > p {
+  margin: 0 0 14px;
+  font-size: 13.5px;
+  color: var(--ink-soft);
+}
+
+/* An invite code is read aloud and typed back, so it gets the mono face and
+   enough tracking that a run of characters can be kept in the eye. */
+#join-code, .invite-code {
+  font-family: var(--mono);
+  letter-spacing: .14em;
+  text-transform: uppercase;
+}
+.invite-code {
+  font-size: 14px;
+  font-weight: 600;
+  background: var(--paper-dim);
+  padding: 3px 8px;
+  border-radius: var(--r-sm);
+}
+
+.member-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.member-list li {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+  padding: 10px 12px;
+  border: 1px solid var(--paper-edge);
+  border-radius: var(--r-sm);
+  font-size: 14px;
+  /* Long addresses must wrap rather than push the buttons off the sheet. */
+  overflow-wrap: anywhere;
+}
+.member-list li > span:first-child {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  min-width: 0;
+}
+
+.row-actions {
+  display: flex;
+  gap: 6px;
+  flex-shrink: 0;
+}
+.row-actions .btn { padding: 5px 10px; font-size: 12px; }
+
+
 /* =========================================================================
    VISIBILITY GUARD — THIS MUST REMAIN THE LAST RULE IN THIS FILE.
    =========================================================================

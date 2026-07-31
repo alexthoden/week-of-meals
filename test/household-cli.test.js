@@ -142,3 +142,39 @@ test('the registry still parses after every command', () => {
   assert.doesNotThrow(() => JSON.parse(raw));
   assert.ok(JSON.parse(raw).households.length >= 2);
 });
+
+test('admin is break-glass: it grants and revokes from the command line', () => {
+  /*
+   * Households govern themselves in the app. This exists for the person who
+   * owns the machine, when the last administrator has left or a registry
+   * predates the idea entirely and nobody can invite anyone.
+   */
+  main(['add', 'Stranded', 'someone@example.com']);
+  main(['admin', 'Stranded', 'owner@example.com']);
+
+  const h = () => registry().all().find((x) => x.name === 'Stranded');
+  assert.ok(h().members.includes('owner@example.com'), 'promoting also adds them if needed');
+  assert.ok(h().admins.includes('owner@example.com'));
+
+  // someone@example.com became admin by being the first member, so there are
+  // two and either may be demoted.
+  main(['admin', 'Stranded', 'owner@example.com', '--revoke']);
+  assert.equal(h().admins.includes('owner@example.com'), false);
+  assert.ok(h().members.includes('owner@example.com'), 'demoting does not remove them');
+});
+
+test('the last administrator cannot be revoked from the command line either', () => {
+  main(['add', 'Solo Admin', 'only@example.com']);
+  assert.throws(() => main(['admin', 'Solo Admin', 'only@example.com', '--revoke']),
+    /Somebody has to be able/);
+});
+
+test('list marks who administers', () => {
+  // Who can invite is the first thing you want from this command when somebody
+  // says they cannot add their wife.
+  main(['add', 'Marked Up', 'boss@example.com', 'other@example.com']);
+  const out = main(['list']);
+
+  assert.match(out, /boss@example\.com \(admin\)/, 'the first member administers by default');
+  assert.match(out, /other@example\.com(?! \(admin\))/, 'and the rest plainly do not');
+});

@@ -550,18 +550,66 @@ function render() {
  * fact, not a failure, so it is worded as one and gives whoever runs the server
  * the exact thing they need to fix it: the address to add.
  */
+/**
+ * The first thing a new person sees: start a household, or join one.
+ *
+ * This used to be a dead end telling you to go and find whoever runs the
+ * server. Households govern themselves now, so the two ways in are both here,
+ * and neither needs anybody's help at a terminal.
+ */
 function renderNoHousehold() {
+  // Somebody already in a household came here to start a second one, so this is
+  // an errand rather than a wall: the tabs stay live and there is a way back.
+  const hasOne = Boolean(session.household);
   document.body.dataset.tab = 'none';
   view.innerHTML = `
-    <div class="empty">
-      <strong>You're not in a household yet</strong>
-      <p>Recipes, the week's plan and the shopping list all belong to a
-      household. ${session.user
-    ? `Ask whoever runs this server to add <code>${esc(session.user.email)}</code> to yours.`
-    : 'Ask whoever runs this server to add you to yours.'}</p>
+    <div class="onboard">
+      <p class="eyebrow">${hasOne ? 'Another household' : 'Welcome'}</p>
+      <h2>${hasOne ? 'Start or join another' : 'Set up your kitchen'}</h2>
+      <p class="sub">Recipes, the week's plan and the shopping list all belong to a
+      household. Everyone in one shares them${session.user
+    ? `. You're signed in as <strong>${esc(session.user.email)}</strong>.` : '.'}</p>
+
+      <div class="onboard-card">
+        <h3>Start a household</h3>
+        <p>For your own kitchen. You'll be able to invite whoever you cook with.</p>
+        <label class="field"><span>What to call it</span>
+          <input id="new-household" placeholder="The Smiths" maxlength="60" autocomplete="off"></label>
+        <button class="btn primary wide" data-act="create-household">Create it</button>
+      </div>
+
+      <div class="onboard-card">
+        <h3>Join one</h3>
+        <p>If somebody has sent you a code, type it here.</p>
+        <label class="field"><span>Invite code</span>
+          <input id="join-code" placeholder="ABCD-EFGH" maxlength="9"
+                 autocomplete="off" autocapitalize="characters" spellcheck="false"></label>
+        <button class="btn wide" data-act="join-household">Join</button>
+      </div>
+
+      ${hasOne ? `<div class="sheet-actions" style="justify-content:center">
+        <button class="btn ghost" data-act="onboard-cancel">Back to ${esc(session.household.name)}</button>
+      </div>` : ''}
     </div>`;
-  // Nothing below is reachable, and leaving it live invites a second failed call.
-  document.querySelectorAll('.tab').forEach((t) => { t.disabled = true; });
+
+  // With no household nothing below is reachable, and leaving the tabs live
+  // only invites a second failed call.
+  document.querySelectorAll('.tab').forEach((t) => { t.disabled = !hasOne; });
+}
+
+/** Back to a working app once a household exists. */
+async function enterHousehold(household, message) {
+  session.households = [...session.households.filter((h) => h.id !== household.id), {
+    id: household.id, name: household.name, isAdmin: household.isAdmin,
+  }];
+  session.household = { id: household.id, name: household.name };
+
+  document.querySelectorAll('.tab').forEach((t) => { t.disabled = false; });
+  state.week = null;
+  state.category = null;
+  state.tab = 'recipes';
+  await refresh();
+  toast(message);
 }
 
 /*
@@ -625,17 +673,111 @@ function renderSignInStalled(data = {}) {
   document.querySelectorAll('.tab').forEach((t) => { t.disabled = true; });
 }
 
-/** Only ever shown to somebody who is genuinely in more than one. */
+/**
+ * Who is in this household, and — for an administrator — the levers.
+ *
+ * A plain member sees the roster and the way out, and no controls they cannot
+ * use. Showing disabled buttons would only invite the question of how to enable
+ * them, and the answer is "ask somebody", which is not a button.
+ */
+function householdSheet(h) {
+  const me = session.user?.email || '';
+  const isAdmin = h.isAdmin;
+
+  const member = (email) => {
+    const admin = h.admins.includes(email);
+    const isMe = email === me;
+    return `<li>
+      <span>${esc(email)}${isMe ? ' <em class="tag" style="font-style:normal">you</em>' : ''}
+        ${admin ? '<em class="tag" style="font-style:normal">admin</em>' : ''}</span>
+      ${isAdmin && !isMe ? `<span class="row-actions">
+        <button class="btn ghost dim" data-act="household-admin"
+          data-email="${esc(email)}" data-admin="${!admin}">${admin ? 'Make member' : 'Make admin'}</button>
+        ${admin ? '' : `<button class="btn ghost dim" data-act="household-remove"
+          data-email="${esc(email)}">Remove</button>`}
+      </span>` : ''}
+    </li>`;
+  };
+
+  return `
+    <h2>${esc(h.name)}</h2>
+    <p class="sub">${h.members.length === 1
+    ? 'You are the only person in it. Invite whoever you cook with.'
+    : `${h.members.length} people share these recipes, this week's plan and this shopping list.`}</p>
+
+    ${h.claimable ? `<div class="notice on-paper">
+      Nobody administers this household. As a member you can take it on.
+      <div class="sheet-actions"><button class="btn primary" data-act="household-claim">Take charge</button></div>
+    </div>` : ''}
+
+    <p class="eyebrow on-paper" style="margin:22px 0 8px">Who's in it</p>
+    <ul class="member-list">${h.members.map(member).join('')}</ul>
+
+    ${isAdmin ? `
+      <p class="eyebrow on-paper" style="margin:22px 0 8px">Invite someone</p>
+      <div class="notice on-paper">They'll need to sign in with the address your
+        Cloudflare Access policy allows. A code is good once, for a week.</div>
+      <label class="field"><span>Lock it to one address (optional)</span>
+        <input id="invite-email" type="email" placeholder="them@example.com" autocomplete="off">
+        <p class="hint">Leave blank for a code anyone can use — simplest to text.
+          Fill it in and the code is useless to anybody else.</p></label>
+      <div class="sheet-actions">
+        <button class="btn primary" data-act="household-invite">Create an invite</button>
+      </div>
+
+      ${h.invites?.length ? `
+        <p class="eyebrow on-paper" style="margin:22px 0 8px">Waiting to be used</p>
+        <ul class="member-list">
+          ${h.invites.map((i) => `<li>
+            <span><code class="invite-code">${esc(i.code)}</code>
+              ${i.email ? `<em style="color:var(--ink-soft)">for ${esc(i.email)}</em>` : ''}</span>
+            <span class="row-actions">
+              <button class="btn ghost dim" data-act="household-copy" data-code="${esc(i.code)}">Copy</button>
+              <button class="btn ghost dim" data-act="household-revoke" data-code="${esc(i.code)}">Revoke</button>
+            </span>
+          </li>`).join('')}
+        </ul>` : ''}
+
+      <p class="eyebrow on-paper" style="margin:22px 0 8px">Rename</p>
+      <label class="field"><span>Household name</span>
+        <input id="household-name" value="${esc(h.name)}" maxlength="60"></label>
+      <div class="sheet-actions">
+        <button class="btn" data-act="household-rename">Save name</button>
+      </div>` : ''}
+
+    <p class="eyebrow on-paper" style="margin:22px 0 8px">Leave</p>
+    <div class="notice on-paper">The recipes stay with the household — they belong
+      to it, not to you.</div>
+    <div class="sheet-actions">
+      <button class="btn danger" data-act="household-leave">Leave ${esc(h.name)}</button>
+    </div>`;
+}
+
+/**
+ * The household section of Settings.
+ *
+ * The switcher appears only for somebody genuinely in more than one; everyone
+ * else simply sees the household they are in and the way to manage it, and the
+ * concept of "which household" is never raised with them at all.
+ */
 function householdSwitcher() {
-  if (session.households.length < 2) return '';
+  if (!session.household) return '';
+  const many = session.households.length > 1;
+
   return `
     <p class="eyebrow on-paper" style="margin:22px 0 8px">Household</p>
-    <div class="notice on-paper">You are in more than one. Everything in the app
-      — recipes, the week, the shopping list — belongs to whichever is chosen here.</div>
-    <div class="tagrow" style="margin-top:10px">
+    ${many ? `<div class="notice on-paper">You are in more than one. Everything in the
+      app — recipes, the week, the shopping list — belongs to whichever is chosen here.</div>
+    <div class="tagrow" style="margin:10px 0">
       ${session.households.map((h) => `<button class="tag" data-act="switch-household"
         data-id="${esc(h.id)}" aria-pressed="${session.household?.id === h.id}"
         style="padding:6px 12px">${esc(h.name)}</button>`).join('')}
+    </div>` : ''}
+    <div class="sheet-actions">
+      <button class="btn wide" data-act="household-open">${many ? `Manage ${esc(session.household.name)}` : `${esc(session.household.name)} &middot; members and invites`}</button>
+    </div>
+    <div class="sheet-actions">
+      <button class="btn ghost dim" data-act="household-another">Start or join another</button>
     </div>`;
 }
 
@@ -884,6 +1026,147 @@ const actions = {
     const url = new URL(window.location.href);
     url.searchParams.set('reauth', Date.now().toString(36));
     window.location.replace(url.toString());
+  },
+
+  async 'create-household'(el) {
+    const name = $('#new-household').value.trim();
+    if (!name) { toast('Give it a name first.', 'bad'); return; }
+    el.classList.add('busy');
+    try {
+      const { household } = await api('/households', { method: 'POST', body: { name } });
+      await enterHousehold(household, `${household.name} is ready.`);
+    } catch (err) {
+      toast(err.message, 'bad');
+    } finally {
+      el.classList.remove('busy');
+    }
+  },
+
+  async 'join-household'(el) {
+    const code = $('#join-code').value.trim();
+    if (!code) { toast('Type the code you were sent.', 'bad'); return; }
+    el.classList.add('busy');
+    try {
+      const { household } = await api('/households/join', { method: 'POST', body: { code } });
+      await enterHousehold(household, `You're in ${household.name}.`);
+    } catch (err) {
+      toast(err.message, 'bad');
+    } finally {
+      el.classList.remove('busy');
+    }
+  },
+
+  /** The management panel, opened from Settings. */
+  /** Somebody already in a household wanting a second one. */
+  async 'household-another'() {
+    closeSheet();
+    renderNoHousehold();
+  },
+
+  async 'onboard-cancel'() {
+    state.tab = 'recipes';
+    render();
+  },
+
+  async 'household-open'() {
+    if (!session.household) return;
+    const detail = await api(`/households/${session.household.id}`);
+    openSheet(householdSheet(detail));
+  },
+
+  async 'household-invite'(el) {
+    const email = ($('#invite-email')?.value || '').trim();
+    el.classList.add('busy');
+    try {
+      await api(`/households/${session.household.id}/invites`, { method: 'POST', body: { email } });
+      openSheet(householdSheet(await api(`/households/${session.household.id}`)));
+      toast('Invite created. Send them the code.');
+    } catch (err) {
+      toast(err.message, 'bad');
+    } finally {
+      el.classList.remove('busy');
+    }
+  },
+
+  async 'household-revoke'(el) {
+    await api(`/households/${session.household.id}/invites/${encodeURIComponent(el.dataset.code)}`, { method: 'DELETE' });
+    openSheet(householdSheet(await api(`/households/${session.household.id}`)));
+    toast('Invite revoked.');
+  },
+
+  async 'household-copy'(el) {
+    const code = el.dataset.code;
+    try {
+      await navigator.clipboard.writeText(code);
+      toast('Code copied.');
+    } catch {
+      // Clipboard needs a secure context, which the home wifi is not.
+      toast(`Invite code: ${code}`);
+    }
+  },
+
+  async 'household-remove'(el) {
+    const who = el.dataset.email;
+    await api(`/households/${session.household.id}/members/${encodeURIComponent(who)}`, { method: 'DELETE' });
+    openSheet(householdSheet(await api(`/households/${session.household.id}`)));
+    toast(`${who} removed.`);
+  },
+
+  async 'household-admin'(el) {
+    const who = el.dataset.email;
+    const make = el.dataset.admin === 'true';
+    await api(`/households/${session.household.id}/members/${encodeURIComponent(who)}/admin`, {
+      method: 'PUT', body: { admin: make },
+    });
+    openSheet(householdSheet(await api(`/households/${session.household.id}`)));
+    toast(make ? `${who} can now invite and manage.` : `${who} is a member again.`);
+  },
+
+  async 'household-rename'(el) {
+    const name = $('#household-name').value.trim();
+    if (!name) { toast('Give it a name.', 'bad'); return; }
+    el.classList.add('busy');
+    try {
+      const { household } = await api(`/households/${session.household.id}/name`, {
+        method: 'PUT', body: { name },
+      });
+      session.household.name = household.name;
+      const mine = session.households.find((h) => h.id === household.id);
+      if (mine) mine.name = household.name;
+      openSheet(householdSheet(await api(`/households/${session.household.id}`)));
+      toast('Renamed.');
+    } catch (err) {
+      toast(err.message, 'bad');
+    } finally {
+      el.classList.remove('busy');
+    }
+  },
+
+  async 'household-claim'() {
+    const { household } = await api(`/households/${session.household.id}/claim`, { method: 'POST' });
+    openSheet(householdSheet(await api(`/households/${household.id}`)));
+    toast('You now administer this household.');
+  },
+
+  async 'household-leave'(el) {
+    const name = session.household.name;
+    el.classList.add('busy');
+    try {
+      await api(`/households/${session.household.id}/leave`, { method: 'POST' });
+      closeSheet();
+      // Whatever is left, if anything. The server is the authority on that.
+      const who = await fetch('/api/whoami').then((r) => r.json());
+      session.households = who.households || [];
+      session.household = who.household || null;
+      if (!session.household) { renderNoHousehold(); toast(`You left ${name}.`); return; }
+      state.week = null;
+      await refresh();
+      toast(`You left ${name}.`);
+    } catch (err) {
+      toast(err.message, 'bad');
+    } finally {
+      el.classList.remove('busy');
+    }
   },
 
   async 'save-anylist'(el) {
