@@ -534,6 +534,14 @@ function renderList() {
             </div>
           </div>`).join('')}
       </section>`).join('')}
+
+    <div class="list-foot">
+      <button class="btn ghost" data-act="clear-list" ${on.length ? '' : 'disabled'}>
+        Clear the list
+      </button>
+      <p class="hint">Unticks everything here, for when the shopping is done.
+        Nothing in AnyList changes, and the meals stay on the week.</p>
+    </div>
   `;
 }
 
@@ -1699,6 +1707,41 @@ const actions = {
     await api('/list/include', { method: 'PUT', body: { week: state.week, key, include: next } });
     await loadList();
     render();
+  },
+
+  /**
+   * Untick everything, for when the shop is done.
+   *
+   * The list is worked out from the week's meals rather than stored, so there
+   * is no list to delete — clearing it means unticking it. That leaves the
+   * ingredients on screen, which is right: they are still what those meals
+   * need, and next week's plan will want them again.
+   *
+   * Nothing is sent to AnyList. Anything already pushed there stays there;
+   * this is the copy in the browser.
+   */
+  async 'clear-list'() {
+    const wasOn = state.list.items.filter((i) => i.include).map((i) => i.key);
+    if (!wasOn.length) return;
+
+    state.list.items.forEach((i) => { i.include = false; });
+    render();
+    await api('/list/include', { method: 'PUT', body: { week: state.week, keys: wasOn, include: false } });
+    await loadList();
+    render();
+
+    // Reinstating two dozen ticks by hand would be a miserable way to recover
+    // from a mis-tap, so the whole thing comes back in one press.
+    toast(`Cleared ${wasOn.length} item${wasOn.length === 1 ? '' : 's'}. AnyList is untouched.`, 'ok', {
+      label: 'Undo',
+      ms: 6000,
+      onClick: async () => {
+        await api('/list/include', { method: 'PUT', body: { week: state.week, keys: wasOn, include: true } });
+        await loadList();
+        render();
+        toast('List restored.');
+      },
+    });
   },
 
   async 'toggle-aisle'(el) {

@@ -1705,6 +1705,21 @@ main {
 .deck-done .sub { color: var(--sage); font-size: 14px; }
 
 
+/* The end of the shopping list: the one destructive-looking thing down here,
+   with the reassurance next to it rather than hidden in a toast afterwards. */
+.list-foot {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  flex-wrap: wrap;
+  margin-top: 26px;
+  padding-top: 18px;
+  border-top: 1px solid var(--spruce-line);
+}
+.list-foot .hint { flex: 1; min-width: 200px; margin: 0; color: var(--sage-dim); }
+.list-foot .btn:disabled { opacity: .45; cursor: default; }
+
+
 /* =========================================================================
    VISIBILITY GUARD — THIS MUST REMAIN THE LAST RULE IN THIS FILE.
    =========================================================================
