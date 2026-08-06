@@ -419,12 +419,25 @@ function renderWeek() {
           <h3>${info.full}</h3>
           <span class="date">${info.month} ${info.num}</span>
         </div>
-        ${meals.map((m) => `
+        ${meals.map((m) => {
+      /* A planned meal is a way into its recipe. Standing in the kitchen on the
+         day, the week is where you already are, and having to go and find the
+         thing again in the Recipes tab is a silly walk. The title opens the
+         recipe sheet, whose primary button is "Cook this".
+
+         A meal whose recipe has been deleted stays plain text: there is
+         nothing to open, and a button that does nothing is worse than none. */
+      const alive = state.boot.recipes.some((r) => r.id === m.recipeId);
+      return `
           <div class="meal">
-            <span class="meal-title">${esc(m.title)}</span>
+            ${alive
+    ? `<button class="meal-title" data-act="open-recipe" data-id="${esc(m.recipeId)}"
+                 aria-label="Open ${esc(m.title)}">${esc(m.title)}</button>`
+    : `<span class="meal-title gone">${esc(m.title)}</span>`}
             ${scaleChips(m)}
             <button class="mini" data-act="unplan" data-id="${m.id}" aria-label="Remove ${esc(m.title)}">&times;</button>
-          </div>`).join('')}
+          </div>`;
+    }).join('')}
         <button class="add-meal" data-act="pick-recipe" data-date="${d}">+ Add a meal</button>
       </section>`;
   }).join('')}
