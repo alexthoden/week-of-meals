@@ -63,6 +63,10 @@ will not sleep while it is open.**
 scales a recipe when you're cooking for company or want leftovers, and the
 shopping list follows along. Arrows move between weeks; past weeks stay put.
 
+**Vote** — the household picks the week together. An administrator opens a poll
+for the days that need filling; everybody swipes through the candidates, right
+for "happy to eat this", left for "not this week"; the winners go on the days.
+
 **List** — everything the week needs, added up and sorted by aisle. Uncheck
 what you already have, then send it to AnyList. Tap **always have** on a line to
 put it in the pantry and stop it appearing at all.
@@ -245,6 +249,60 @@ sign-in at a time.
 
 The assertion itself is never logged. It is a live credential; the AUD tag
 beside it merely names an application and cannot authenticate anything.
+
+### Voting on the week
+
+The whole design turns on one decision: **a poll asks a single question — which
+of these should we eat — rather than one question per day.** Seven days times a
+dozen candidates is eighty-odd decisions on a phone, and a household would
+abandon it after one round. Families argue about *which meals*, not about which
+night the chili lands on; the nights are a scheduling problem the administrator
+solves in thirty seconds afterwards in the week view.
+
+**Approval voting**, not pick-one. Tick everything you would be happy to eat.
+This beats pick-one outright for a household: it surfaces the meal nobody
+objects to instead of the one that won two votes to one while a third person
+quietly dreads it, ties are rare, and it asks the least of each voter. There is
+a test for exactly that case.
+
+**A deck of cards**, because approval voting is a yes/no question repeated,
+which is the shape a card deck fits: one decision on screen, no scrolling, no
+hunting for the checkbox you meant. Swipe right to approve, left to pass. It is
+built on pointer events, so a finger and a mouse travel the same code path —
+the desktop drag is not a second implementation. Arrow keys do the same job,
+and the two buttons underneath work for anyone who would rather not drag at
+all. The card leans and stamps itself as you drag, so a throw is never a guess,
+and `prefers-reduced-motion` skips the animation entirely.
+
+**What the administrator sets**, and nothing more:
+
+| Control | Default |
+| --- | --- |
+| Which days | the days with nothing on them yet |
+| Which meal | dinner |
+| What's on the ballot | every recipe, or a shortlist they tick |
+| Closes | when they say so, or a date |
+
+How many meals to pick is **derived from the days chosen**, not asked for
+separately. That is the main thing keeping this from sprawling into a form.
+
+**Nobody sees the tally until it closes.** You can see *that* somebody has
+voted, so you know who to nudge, but not what they chose. Early numbers change
+late votes, and a household is exactly the place where being seen to be outvoted
+early sours the whole exercise. The test walks the entire payload for the keys
+that would carry a count and asserts none of them reach the browser.
+
+**Closing does not touch the plan.** It reveals the ranking with a *Add these to
+the week* button, and the administrator can drop a winner or break a tie first.
+A poll with an odd result should never quietly become dinner. Applying is
+idempotent, so a second press cannot double up the week.
+
+Two rules keep it from getting confusing: one open poll per week, and votes stay
+changeable until it closes. Ties break on the ballot's own order — arbitrary,
+but stable, so nobody can refresh their way to a different winner.
+
+Polls need sign-in switched on. Unguarded, everyone shares one identity and a
+vote would just be one person overwriting themselves.
 
 ### Categories, and why they are not tags
 
@@ -505,6 +563,7 @@ server/
     consolidate.js      a week of meals -> one shopping list
     store.js            the JSON file, written atomically
     categories.js       which shelf a recipe lives on
+    polls.js            approval voting on next week's meals
     households.js       the registry: who shares a kitchen
     secrets.js          encryption at rest for AnyList passwords
     anylist.js          AnyList session, dedupe, error handling

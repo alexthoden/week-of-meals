@@ -11,6 +11,7 @@ const { consolidate, AISLE_ORDER } = require('./lib/consolidate');
 const { parseIngredient } = require('./lib/parse');
 const categories = require('./lib/categories');
 const households = require('./lib/households');
+const polls = require('./lib/polls');
 const { importFromUrl } = require('./lib/import');
 
 const PORT = Number(process.env.PORT) || 4321;
@@ -695,6 +696,193 @@ app.get('/api/plan/weeks', wrap(async (req, res) => {
     if (count) out.push({ weekOf: start, meals: count });
   }
   res.json({ weeks: out });
+}));
+
+
+/* ---------------------------------------------------------------- polls -- */
+
+/**
+ * A household decides its week together.
+ *
+ * The administrator sets what is being chosen; everybody approves the meals
+ * they would be happy with; the administrator applies the winners. Only one
+ * poll may be open per week, because two competing votes for the same seven
+ * days is a way to waste an evening.
+ */
+
+function pollsIn(store) {
+  if (!Array.isArray(store.data.polls)) store.data.polls = [];
+  return store.data.polls;
+}
+
+/** Members of the household this request resolved to. */
+const membersOf = (req) => (req.household ? req.household.members : []);
+
+/** Close anything whose deadline has passed, on read. No timer to miss. */
+function settleOverdue(req) {
+  const due = pollsIn(req.store).filter((p) => polls.isOverdue(p));
+  if (!due.length) return Promise.resolve();
+  return req.store.update(() => {
+    for (const poll of due) polls.close(poll, req.store.data.recipes);
+  });
+}
+
+function viewOf(req, poll) {
+  return polls.publicView(poll, {
+    email: req.user?.email,
+    recipes: req.store.data.recipes,
+    members: membersOf(req),
+  });
+}
+
+/** Is the caller an administrator of the household they are acting in? */
+function pollAdmin(req, res) {
+  if (!req.user || req.user.local) {
+    // Unguarded there is one household and one person; a vote is meaningless.
+    res.status(400).json({
+      error: 'Polls need sign-in switched on, so there is somebody to count.',
+      code: 'NO_SIGNIN',
+    });
+    return false;
+  }
+  if (!registry.isAdmin(req.household.id, req.user.email)) {
+    res.status(403).json({
+      error: 'Only an administrator of this household can run a poll.',
+      code: 'NOT_ADMIN',
+    });
+    return false;
+  }
+  return true;
+}
+
+app.get('/api/polls', wrap(async (req, res) => {
+  await settleOverdue(req);
+  const week = weekStart(req.query.week, req.store.data.settings.startOfWeek ?? 0);
+  const mine = pollsIn(req.store).filter((p) => p.weekOf === week);
+  res.json({
+    polls: mine.map((p) => viewOf(req, p)),
+    canRun: Boolean(req.user && !req.user.local && registry.isAdmin(req.household.id, req.user.email)),
+  });
+}));
+
+app.post('/api/polls', wrap(async (req, res) => {
+  if (!pollAdmin(req, res)) return undefined;
+
+  const startDay = req.store.data.settings.startOfWeek ?? 0;
+  const week = weekStart(req.body.week, startDay);
+  const valid = new Set(weekDates(week));
+
+  const days = (Array.isArray(req.body.days) ? req.body.days : []).filter((d) => valid.has(d));
+  if (!days.length) return res.status(400).json({ error: 'Pick at least one day to plan.', code: 'NO_DAYS' });
+
+  if (pollsIn(req.store).some((p) => p.weekOf === week && p.status === polls.STATUS.OPEN)) {
+    return res.status(409).json({
+      error: 'There is already a poll open for that week. Close it first.',
+      code: 'POLL_OPEN',
+    });
+  }
+
+  const known = new Set(req.store.data.recipes.map((r) => r.id));
+  const shortlist = (Array.isArray(req.body.candidates) ? req.body.candidates : [])
+    .filter((id) => known.has(id));
+
+  let poll;
+  try {
+    poll = polls.create({
+      weekOf: week,
+      days,
+      category: req.body.category,
+      candidates: shortlist,
+      createdBy: req.user.email,
+      closesAt: req.body.closesAt,
+    });
+  } catch (err) {
+    return res.status(err.status || 400).json({ error: err.message, code: err.code });
+  }
+
+  await req.store.update((d) => { (d.polls = d.polls || []).push(poll); });
+  return res.status(201).json({ poll: viewOf(req, poll) });
+}));
+
+/** Cast or change an approval ballot. Members and administrators alike. */
+app.put('/api/polls/:id/vote', wrap(async (req, res) => {
+  if (!req.user || req.user.local) {
+    return res.status(400).json({ error: 'Polls need sign-in switched on.', code: 'NO_SIGNIN' });
+  }
+  await settleOverdue(req);
+
+  const poll = pollsIn(req.store).find((p) => p.id === req.params.id);
+  if (!poll) return res.status(404).json({ error: 'That poll is gone.', code: 'NO_POLL' });
+
+  try {
+    await req.store.update(() => polls.vote(poll, req.user.email, req.body.approvals, req.store.data.recipes));
+  } catch (err) {
+    return res.status(err.status || 400).json({ error: err.message, code: err.code });
+  }
+  return res.json({ poll: viewOf(req, poll) });
+}));
+
+app.post('/api/polls/:id/close', wrap(async (req, res) => {
+  if (!pollAdmin(req, res)) return undefined;
+
+  const poll = pollsIn(req.store).find((p) => p.id === req.params.id);
+  if (!poll) return res.status(404).json({ error: 'That poll is gone.', code: 'NO_POLL' });
+
+  await req.store.update(() => polls.close(poll, req.store.data.recipes));
+  return res.json({ poll: viewOf(req, poll) });
+}));
+
+/**
+ * Put the winners on the days.
+ *
+ * Deliberately a separate, deliberate press rather than something closing does
+ * by itself: a tie, or a week where only two meals got any approval at all,
+ * should never quietly become the plan. The administrator sees the ranking
+ * first and can drop one before applying.
+ */
+app.post('/api/polls/:id/apply', wrap(async (req, res) => {
+  if (!pollAdmin(req, res)) return undefined;
+
+  const poll = pollsIn(req.store).find((p) => p.id === req.params.id);
+  if (!poll) return res.status(404).json({ error: 'That poll is gone.', code: 'NO_POLL' });
+  if (poll.status !== polls.STATUS.CLOSED) {
+    return res.status(409).json({ error: 'Close the poll first.', code: 'POLL_OPEN' });
+  }
+
+  // The administrator may hand back an edited, reordered list; otherwise the
+  // top N of the frozen result.
+  const known = new Set(req.store.data.recipes.map((r) => r.id));
+  const chosen = (Array.isArray(req.body.recipeIds) && req.body.recipeIds.length
+    ? req.body.recipeIds
+    : (poll.result || []).map((r) => r.id)
+  ).filter((id) => known.has(id)).slice(0, poll.days.length);
+
+  if (!chosen.length) {
+    return res.status(400).json({ error: 'Nothing was chosen to add.', code: 'NOTHING_CHOSEN' });
+  }
+
+  const added = [];
+  await req.store.update((d) => {
+    poll.days.forEach((date, i) => {
+      const recipeId = chosen[i];
+      if (!recipeId) return;
+      d.plan[date] = d.plan[date] || [];
+      // Idempotent: pressing apply twice must not double up the week.
+      if (d.plan[date].some((m) => m.recipeId === recipeId)) return;
+      const meal = { id: id(), recipeId, scale: 1 };
+      d.plan[date].push(meal);
+      added.push({ date, ...meal });
+    });
+    poll.appliedAt = new Date().toISOString();
+  });
+
+  return res.json({ ok: true, added, poll: viewOf(req, poll) });
+}));
+
+app.delete('/api/polls/:id', wrap(async (req, res) => {
+  if (!pollAdmin(req, res)) return undefined;
+  await req.store.update((d) => { d.polls = pollsIn(req.store).filter((p) => p.id !== req.params.id); });
+  return res.json({ ok: true });
 }));
 
 /* ----------------------------------------------------------- shopping ---- */

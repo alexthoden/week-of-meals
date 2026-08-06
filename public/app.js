@@ -33,6 +33,11 @@ const state = {
   /* Which category folder is open. null is the top level, where the folders
      themselves are what you see. '*' is "All recipes" — one flat grid. */
   category: null,
+  /* Poll being composed: null means "every recipe is on the ballot", a Set
+     means the admin is picking a shortlist. */
+  pollShortlist: null,
+  pollDropped: null,
+  poll: null,
 };
 
 /* ------------------------------------------------------------- utils -- */
@@ -236,9 +241,28 @@ async function loadList() {
   return state.list;
 }
 
+/**
+ * The poll for the week on screen, if there is one.
+ *
+ * Never fatal: polls are an extra, and a household with sign-in switched off
+ * has none. A failure here must not stop the week from rendering.
+ */
+async function loadPoll() {
+  try {
+    const { polls: found, canRun } = await api(`/polls?week=${state.week}`);
+    state.pollCanRun = Boolean(canRun);
+    // The open one if there is one, otherwise the most recent closed one.
+    state.poll = found.find((p) => p.status === 'open') || found[found.length - 1] || null;
+  } catch {
+    state.poll = null;
+    state.pollCanRun = false;
+  }
+}
+
 async function refresh({ list = true } = {}) {
   await loadBoot(state.week);
   if (list) await loadList();
+  await loadPoll();
   render();
 }
 
@@ -392,6 +416,8 @@ function renderWeek() {
       <button data-act="week" data-dir="1" aria-label="Next week">&rarr;</button>
     </div>
 
+    ${pollBanner()}
+
     <div class="ribbon">
       ${dates.map((d) => {
     const n = plan[d]?.length || 0;
@@ -535,9 +561,15 @@ function render() {
     state.category = null;
   }
 
-  // The recipes tab is a grid and wants the whole window; the week and the
-  // shopping list are columns and want to stay a column. CSS reads this.
-  document.body.dataset.tab = state.tab;
+  /* The recipes tab is a grid and wants the whole window; the week and the
+     shopping list are columns and want to stay a column. CSS reads this.
+
+     Deliberately `data-view` rather than `data-tab`: the tab buttons already
+     carry data-tab, and putting the same attribute on <body> makes every
+     `[data-tab="week"]` query match the whole document first. That is a trap
+     for anything selecting a tab — a test, a script, a future feature — and it
+     costs nothing to avoid. */
+  document.body.dataset.view = state.tab;
 
   view.innerHTML = state.tab === 'recipes' ? renderRecipes()
     : state.tab === 'list' ? renderList() : renderWeek();
@@ -574,7 +606,7 @@ function renderNoHousehold() {
   // Somebody already in a household came here to start a second one, so this is
   // an errand rather than a wall: the tabs stay live and there is a way back.
   const hasOne = Boolean(session.household);
-  document.body.dataset.tab = 'none';
+  document.body.dataset.view = 'none';
   view.innerHTML = `
     <div class="onboard">
       <p class="eyebrow">${hasOne ? 'Another household' : 'Welcome'}</p>
@@ -668,7 +700,7 @@ const AUTH_CAUSES = {
  * diagnosis.
  */
 function renderSignInStalled(data = {}) {
-  document.body.dataset.tab = 'none';
+  document.body.dataset.view = 'none';
   const code = data.code || 'AUTH';
   const cause = AUTH_CAUSES[code];
 
@@ -791,6 +823,152 @@ function householdSwitcher() {
     </div>
     <div class="sheet-actions">
       <button class="btn ghost dim" data-act="household-another">Start or join another</button>
+    </div>`;
+}
+
+/* -------------------------------------------------------------- polls -- */
+
+/**
+ * The poll, wherever it has got to, at the top of the week it is about.
+ *
+ * One band that changes with the state rather than four screens: nobody should
+ * have to go looking for a vote that is waiting on them.
+ */
+function pollBanner() {
+  const poll = state.poll;
+  const canRun = state.pollCanRun;
+
+  if (!poll) {
+    return canRun ? `
+      <div class="poll-band quiet">
+        <div>
+          <strong>Let everyone choose</strong>
+          <p>Open a vote and fill this week with what the household picks.</p>
+        </div>
+        <button class="btn" data-act="poll-new">Start a vote</button>
+      </div>` : '';
+  }
+
+  const { voted, of } = poll.turnout;
+
+  if (poll.status === 'open') {
+    const mine = poll.myVote !== null;
+    return `
+      <div class="poll-band ${mine ? '' : 'urgent'}">
+        <div>
+          <strong>${mine ? "You've voted" : 'Vote on this week'}</strong>
+          <p>${voted} of ${of} in${poll.voted.length && mine ? ` &middot; ${poll.voted.map(esc).join(', ')}` : ''}.
+            Choosing ${poll.wanted} meal${poll.wanted === 1 ? '' : 's'}.
+            ${mine ? 'Results appear when it closes.' : ''}</p>
+        </div>
+        <div class="poll-band-actions">
+          <button class="btn ${mine ? 'ghost' : 'primary'}" data-act="vote-open">${mine ? 'Change my vote' : 'Vote'}</button>
+          ${canRun ? `<button class="btn ghost dim" data-act="poll-close-vote" data-id="${esc(poll.id)}">Close it</button>` : ''}
+        </div>
+      </div>`;
+  }
+
+  return `
+    <div class="poll-band">
+      <div>
+        <strong>The votes are in</strong>
+        <p>${poll.appliedAt ? 'Already added to the week.' : `Top ${poll.wanted} ready to add.`}</p>
+      </div>
+      <button class="btn ${poll.appliedAt ? 'ghost' : 'primary'}" data-act="poll-results" data-id="${esc(poll.id)}">
+        ${poll.appliedAt ? 'See results' : 'Review and add'}
+      </button>
+    </div>`;
+}
+
+/** What the admin sets up. Four controls, three of them with sane defaults. */
+function pollForm() {
+  const dates = state.boot.dates;
+  const plan = state.boot.plan;
+  const shortlist = state.pollShortlist;
+  const recipes = state.boot.recipes;
+
+  // Default to the days that have nothing on them yet — the ones you are
+  // actually trying to fill.
+  const empty = dates.filter((d) => !(plan[d] || []).length);
+  const preselected = new Set(empty.length ? empty : dates);
+
+  return `
+    <h2>Start a vote</h2>
+    <p class="sub">Everyone ticks the meals they'd be happy with. You place the winners.</p>
+
+    <p class="eyebrow on-paper" style="margin:22px 0 8px">Which days</p>
+    <div class="tagrow" style="margin-bottom:10px">
+      ${['all', 'weekdays', 'weekend'].map((k) => `<button class="tag" data-act="poll-days-preset"
+        data-preset="${k}" style="padding:5px 11px">${k === 'all' ? 'All week' : k[0].toUpperCase() + k.slice(1)}</button>`).join('')}
+    </div>
+    <div class="day-picker">
+      ${dates.map((d) => {
+    const info = dayOf(d);
+    return `<button class="day-pick" data-act="poll-day" data-date="${d}"
+        aria-pressed="${preselected.has(d)}"><b>${info.name}</b><i>${info.num}</i></button>`;
+  }).join('')}
+    </div>
+    <p class="hint" id="poll-count">Choosing ${preselected.size} meal${preselected.size === 1 ? '' : 's'}</p>
+
+    <label class="field"><span>Which meal</span>
+      <select id="poll-category">
+        ${(state.boot.categoryChoices || []).map((c) => `<option value="${esc(c)}"${c === 'dinner' ? ' selected' : ''}>${esc(c)}</option>`).join('')}
+      </select></label>
+
+    <p class="eyebrow on-paper" style="margin:22px 0 8px">What's on the ballot</p>
+    <div class="tagrow" style="margin-bottom:10px">
+      <button class="tag" data-act="poll-scope" data-scope="all" aria-pressed="${shortlist === null}"
+        style="padding:5px 11px">Every recipe</button>
+      <button class="tag" data-act="poll-scope" data-scope="some" aria-pressed="${shortlist !== null}"
+        style="padding:5px 11px">Just these</button>
+    </div>
+    ${shortlist === null
+    ? `<div class="notice on-paper">All ${recipes.length} recipes will be on the ballot.</div>`
+    : `<div class="notice on-paper">Tick the ones to offer. <span id="poll-picked">${shortlist.size} chosen</span></div>
+       <div class="shortlist">
+         ${recipes.map((r) => `<button class="shortlist-item" data-act="poll-pick" data-id="${esc(r.id)}"
+           aria-pressed="${shortlist.has(r.id)}">${esc(r.title)}</button>`).join('')}
+       </div>`}
+
+    <label class="field"><span>Close automatically on (optional)</span>
+      <input id="poll-closes" type="date"></label>
+
+    <div class="sheet-actions">
+      <button class="btn primary" data-act="poll-create">Open the vote</button>
+      <button class="btn ghost" data-close style="flex:0 0 auto">Cancel</button>
+    </div>`;
+}
+
+/** The ranking, with the winners marked and a way to drop one before applying. */
+function pollResults(poll) {
+  const dropped = state.pollDropped || new Set();
+  const result = poll.result || [];
+  const keeping = result.filter((r) => !dropped.has(r.id)).slice(0, poll.wanted);
+  const keptIds = new Set(keeping.map((r) => r.id));
+
+  return `
+    <h2>The votes are in</h2>
+    <p class="sub">${poll.turnout.voted} of ${poll.turnout.of} voted. Filling
+      ${poll.days.length} day${poll.days.length === 1 ? '' : 's'}.</p>
+
+    <ul class="result-list">
+      ${result.map((r) => `<li data-in="${keptIds.has(r.id)}">
+        <span class="bar" style="--w:${poll.turnout.voted ? Math.round((r.approvals / poll.turnout.voted) * 100) : 0}%"></span>
+        <span class="result-title">${esc(r.title)}</span>
+        <span class="result-count">${r.approvals}</span>
+        <button class="btn ghost dim" data-act="poll-drop" data-id="${esc(r.id)}" data-poll="${esc(poll.id)}"
+          >${dropped.has(r.id) ? 'Put back' : 'Drop'}</button>
+      </li>`).join('')}
+    </ul>
+
+    ${poll.appliedAt ? `<div class="notice on-paper">Added to the week already. Applying
+      again will only fill days that are still empty.</div>` : ''}
+
+    <div class="sheet-actions">
+      <button class="btn primary" data-act="poll-apply" data-id="${esc(poll.id)}">
+        Add ${keeping.length} to the week
+      </button>
+      <button class="btn ghost dim" data-act="poll-delete" data-id="${esc(poll.id)}">Delete poll</button>
     </div>`;
 }
 
@@ -1182,6 +1360,154 @@ const actions = {
     }
   },
 
+  /* ------------------------------------------------------------- polls -- */
+
+  async 'vote-open'() {
+    const { polls: found } = await api(`/polls?week=${state.week}`);
+    const open = found.find((p) => p.status === 'open');
+    if (!open) { toast('That poll has closed.', 'bad'); await refresh(); return; }
+    if (!open.candidates.length) { toast('There are no recipes to vote on yet.', 'bad'); return; }
+    openVote(open);
+  },
+
+  async 'vote-close'() { closeVote(); },
+  async 'vote-undo'() { undo(); },
+  async 'vote-yes'() { decide(true); },
+  async 'vote-no'() { decide(false); },
+  async 'vote-restart'() { vote.at = 0; vote.picks = new Map(); renderDeck(); },
+
+  async 'vote-submit'(el) {
+    const approvals = [...vote.picks.entries()].filter(([, v]) => v).map(([id]) => id);
+    el.classList.add('busy');
+    try {
+      await api(`/polls/${vote.poll.id}/vote`, { method: 'PUT', body: { approvals } });
+      closeVote();
+      await refresh();
+      toast('Your vote is in.');
+    } catch (err) {
+      toast(err.message, 'bad');
+    } finally {
+      el.classList.remove('busy');
+    }
+  },
+
+  async 'poll-new'() {
+    openSheet(pollForm());
+  },
+
+  async 'poll-create'(el) {
+    const days = [...document.querySelectorAll('[data-act="poll-day"][aria-pressed="true"]')]
+      .map((d) => d.dataset.date);
+    if (!days.length) { toast('Pick at least one day.', 'bad'); return; }
+
+    const shortlist = state.pollShortlist === null ? [] : [...state.pollShortlist];
+    const closesAt = $('#poll-closes').value
+      ? new Date(`${$('#poll-closes').value}T20:00:00`).toISOString() : '';
+
+    el.classList.add('busy');
+    try {
+      await api('/polls', {
+        method: 'POST',
+        body: {
+          week: state.week, days, category: $('#poll-category').value, candidates: shortlist, closesAt,
+        },
+      });
+      closeSheet();
+      await refresh();
+      toast('Poll is open. Tell everyone to vote.');
+    } catch (err) {
+      toast(err.message, 'bad');
+    } finally {
+      el.classList.remove('busy');
+    }
+  },
+
+  async 'poll-day'(el) {
+    el.setAttribute('aria-pressed', el.getAttribute('aria-pressed') !== 'true');
+    const n = document.querySelectorAll('[data-act="poll-day"][aria-pressed="true"]').length;
+    $('#poll-count').textContent = n ? `Choosing ${n} meal${n === 1 ? '' : 's'}` : 'Pick at least one day';
+  },
+
+  async 'poll-days-preset'(el) {
+    const want = el.dataset.preset;
+    document.querySelectorAll('[data-act="poll-day"]').forEach((d) => {
+      const dow = new Date(`${d.dataset.date}T12:00:00`).getDay();
+      const on = want === 'all' || (want === 'weekdays' && dow > 0 && dow < 6)
+        || (want === 'weekend' && (dow === 0 || dow === 6));
+      d.setAttribute('aria-pressed', on);
+    });
+    const n = document.querySelectorAll('[data-act="poll-day"][aria-pressed="true"]').length;
+    $('#poll-count').textContent = `Choosing ${n} meal${n === 1 ? '' : 's'}`;
+  },
+
+  /** Flip between "any recipe" and a shortlist the admin ticks. */
+  async 'poll-scope'(el) {
+    state.pollShortlist = el.dataset.scope === 'all' ? null : new Set();
+    openSheet(pollForm());
+  },
+
+  async 'poll-pick'(el) {
+    if (!state.pollShortlist) state.pollShortlist = new Set();
+    const id = el.dataset.id;
+    if (state.pollShortlist.has(id)) state.pollShortlist.delete(id);
+    else state.pollShortlist.add(id);
+    el.setAttribute('aria-pressed', state.pollShortlist.has(id));
+    $('#poll-picked').textContent = `${state.pollShortlist.size} chosen`;
+  },
+
+  async 'poll-close-vote'(el) {
+    el.classList.add('busy');
+    try {
+      await api(`/polls/${el.dataset.id}/close`, { method: 'POST' });
+      await refresh();
+      toast('Poll closed. Here are the results.');
+    } finally {
+      el.classList.remove('busy');
+    }
+  },
+
+  async 'poll-results'(el) {
+    const { polls: found } = await api(`/polls?week=${state.week}`);
+    const poll = found.find((p) => p.id === el.dataset.id);
+    if (poll) openSheet(pollResults(poll));
+  },
+
+  async 'poll-drop'(el) {
+    state.pollDropped = state.pollDropped || new Set();
+    if (state.pollDropped.has(el.dataset.id)) state.pollDropped.delete(el.dataset.id);
+    else state.pollDropped.add(el.dataset.id);
+    const { polls: found } = await api(`/polls?week=${state.week}`);
+    openSheet(pollResults(found.find((p) => p.id === el.dataset.poll)));
+  },
+
+  async 'poll-apply'(el) {
+    const dropped = state.pollDropped || new Set();
+    const { polls: found } = await api(`/polls?week=${state.week}`);
+    const poll = found.find((p) => p.id === el.dataset.id);
+    const recipeIds = (poll.result || []).map((r) => r.id).filter((id) => !dropped.has(id));
+
+    el.classList.add('busy');
+    try {
+      const { added } = await api(`/polls/${poll.id}/apply`, { method: 'POST', body: { recipeIds } });
+      closeSheet();
+      state.pollDropped = new Set();
+      state.tab = 'week';
+      await refresh();
+      toast(`${added.length} meal${added.length === 1 ? '' : 's'} added to the week.`);
+    } catch (err) {
+      toast(err.message, 'bad');
+    } finally {
+      el.classList.remove('busy');
+    }
+  },
+
+  async 'poll-delete'(el) {
+    await api(`/polls/${el.dataset.id}`, { method: 'DELETE' });
+    closeSheet();
+    await refresh();
+    toast('Poll deleted.');
+  },
+
   async 'save-anylist'(el) {
     el.classList.add('busy');
     try {
@@ -1532,6 +1858,7 @@ $('#btn-settings').addEventListener('click', () => actions.settings());
 
     await loadBoot();
     await loadList();
+    await loadPoll();
     state.tab = state.boot.recipes.length ? 'week' : 'recipes';
     render();
   } catch (err) {
@@ -1983,3 +2310,197 @@ function findMeal(mealId) {
   }
   return null;
 }
+
+/* ============================================================== voting ==
+   A deck of cards you throw one way or the other.
+
+   Approval voting is a yes/no question repeated, which is exactly the shape a
+   card deck fits: one decision on screen at a time, no scrolling, no hunting
+   for the checkbox you meant. It also stops the ballot feeling like a form,
+   which matters when you are asking a household to do this every week.
+
+   Pointer events rather than touch events, so a finger and a mouse travel the
+   same code path — the desktop drag is not a separate implementation, it is the
+   same one. Keys and buttons do the same job for anyone not dragging, and the
+   whole thing works without a gesture at all.
+*/
+
+const vote = {
+  poll: null,
+  order: [],      // recipe ids, the order they are shown in
+  at: 0,          // how far through
+  picks: new Map(), // recipeId -> true (approve) | false (pass)
+  drag: null,
+};
+
+const voteHost = $('#vote');
+const deck = $('#deck');
+
+/** Distance past which a release counts as a decision rather than a wobble. */
+const THROW_PX = 90;
+
+async function openVote(poll) {
+  vote.poll = poll;
+  vote.order = poll.candidates.map((c) => c.id);
+  vote.picks = new Map();
+  vote.at = 0;
+
+  // Coming back to change your mind: start from the top with what you said
+  // last time already filled in, so you can re-throw only what you want to.
+  if (poll.myVote) {
+    const approved = new Set(poll.myVote);
+    for (const c of poll.candidates) vote.picks.set(c.id, approved.has(c.id));
+  }
+
+  voteHost.hidden = false;
+  document.body.style.overflow = 'hidden';
+  renderDeck();
+}
+
+function closeVote() {
+  voteHost.hidden = true;
+  deck.innerHTML = '';
+  document.body.style.overflow = '';
+  vote.poll = null;
+}
+
+function voteCard(candidate, depth) {
+  const decided = vote.picks.get(candidate.id);
+  return `
+    <article class="card-face" data-id="${esc(candidate.id)}" data-depth="${depth}">
+      <div class="card-photo">
+        ${candidate.image
+    ? `<img src="${esc(imageUrl(candidate.image))}" alt="" onerror="this.parentNode.classList.add('blank')">`
+    : ''}<em>${esc(initials(candidate.title))}</em>
+      </div>
+      <div class="card-body">
+        <h3>${esc(candidate.title)}</h3>
+        <p class="meta">${[candidate.category, candidate.time].filter(Boolean).map(esc).join(' &middot; ') || 'No timing noted'}</p>
+      </div>
+      <span class="stamp yes" aria-hidden="true">Yes</span>
+      <span class="stamp no" aria-hidden="true">Pass</span>
+      ${decided === undefined ? '' : `<span class="prior ${decided ? 'yes' : 'no'}">Last time: ${decided ? 'yes' : 'pass'}</span>`}
+    </article>`;
+}
+
+function renderDeck() {
+  const { poll } = vote;
+  const left = vote.order.length - vote.at;
+
+  $('#vote-undo').disabled = vote.at === 0;
+
+  if (left <= 0) {
+    const yes = [...vote.picks.entries()].filter(([, v]) => v).map(([id]) => id);
+    const names = poll.candidates.filter((c) => yes.includes(c.id)).map((c) => c.title);
+    $('#vote-progress').textContent = 'All done';
+    $('#vote-hint').textContent = '';
+    deck.innerHTML = `
+      <div class="deck-done">
+        <p class="eyebrow">Your ballot</p>
+        <h3>${yes.length} of ${vote.order.length}</h3>
+        <p class="sub">${names.length
+    ? `You'd be happy with ${names.map(esc).join(', ')}.`
+    : "You passed on everything. That's a fine answer, but nothing will be picked for you."}</p>
+        <div class="sheet-actions" style="justify-content:center">
+          <button class="btn primary" data-act="vote-submit">Send it in</button>
+          <button class="btn ghost" data-act="vote-restart">Start over</button>
+        </div>
+      </div>`;
+    return;
+  }
+
+  // Two cards deep: enough to read as a stack, cheap enough to re-render.
+  const upcoming = vote.order.slice(vote.at, vote.at + 2)
+    .map((id) => poll.candidates.find((c) => c.id === id))
+    .filter(Boolean);
+
+  $('#vote-progress').textContent = `${vote.at + 1} of ${vote.order.length}`;
+  $('#vote-hint').textContent = 'Would you be happy to eat this?';
+  deck.innerHTML = upcoming.map((c, i) => voteCard(c, i)).reverse().join('');
+  armTopCard();
+}
+
+const topCard = () => deck.querySelector('.card-face[data-depth="0"]');
+
+/**
+ * Commit the visible card.
+ * @param {boolean} approved
+ * @param {boolean} [silent]  skip the fly-out, for keyboard and buttons
+ */
+function decide(approved, silent = false) {
+  const card = topCard();
+  if (!card) return;
+  const id = card.dataset.id;
+  vote.picks.set(id, approved);
+  vote.at += 1;
+
+  const finish = () => renderDeck();
+  if (silent || window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
+    finish();
+    return;
+  }
+
+  card.classList.add('flung');
+  card.style.transform = `translate(${approved ? 140 : -140}%, 20px) rotate(${approved ? 24 : -24}deg)`;
+  card.style.opacity = '0';
+  setTimeout(finish, 220);
+}
+
+function undo() {
+  if (vote.at === 0) return;
+  vote.at -= 1;
+  vote.picks.delete(vote.order[vote.at]);
+  renderDeck();
+}
+
+/** Drag, tilt, and a stamp that fades in as you commit. */
+function armTopCard() {
+  const card = topCard();
+  if (!card) return;
+
+  card.addEventListener('pointerdown', (e) => {
+    // Ignore the secondary button, and anything that is already a control.
+    if (e.button !== 0) return;
+    card.setPointerCapture(e.pointerId);
+    vote.drag = { x: e.clientX, y: e.clientY, dx: 0 };
+    card.classList.add('dragging');
+  });
+
+  card.addEventListener('pointermove', (e) => {
+    if (!vote.drag) return;
+    vote.drag.dx = e.clientX - vote.drag.x;
+    const dy = e.clientY - vote.drag.y;
+    const tilt = vote.drag.dx / 18;
+    card.style.transform = `translate(${vote.drag.dx}px, ${dy * 0.25}px) rotate(${tilt}deg)`;
+    // Past the threshold the card says which way it is going before you let go.
+    const lean = Math.min(Math.abs(vote.drag.dx) / THROW_PX, 1);
+    card.style.setProperty('--yes', vote.drag.dx > 0 ? String(lean) : '0');
+    card.style.setProperty('--no', vote.drag.dx < 0 ? String(lean) : '0');
+  });
+
+  const release = () => {
+    if (!vote.drag) return;
+    const { dx } = vote.drag;
+    vote.drag = null;
+    card.classList.remove('dragging');
+
+    if (Math.abs(dx) >= THROW_PX) { decide(dx > 0); return; }
+    // Not far enough: spring back rather than guessing what was meant.
+    card.style.transform = '';
+    card.style.setProperty('--yes', '0');
+    card.style.setProperty('--no', '0');
+  };
+
+  card.addEventListener('pointerup', release);
+  card.addEventListener('pointercancel', release);
+}
+
+/* Arrow keys are the desktop equivalent of the throw, and the only way through
+   the deck for anyone using a keyboard. */
+document.addEventListener('keydown', (e) => {
+  if (voteHost.hidden) return;
+  if (e.key === 'ArrowRight' || e.key === 'y') { e.preventDefault(); decide(true); }
+  else if (e.key === 'ArrowLeft' || e.key === 'n') { e.preventDefault(); decide(false); }
+  else if (e.key === 'Backspace') { e.preventDefault(); undo(); }
+  else if (e.key === 'Escape') closeVote();
+});

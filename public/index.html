@@ -70,6 +70,31 @@
   </footer>
 </div>
 
+<!--
+  Voting. Like cooking mode, this owns the screen: a card you throw one way or
+  the other needs room to be thrown, and a sheet that scrolls would fight the
+  gesture for ownership of a vertical drag.
+-->
+<div class="vote" id="vote" hidden>
+  <header class="vote-bar">
+    <button class="btn ghost" data-act="vote-close">Close</button>
+    <span class="vote-progress" id="vote-progress"></span>
+    <button class="btn ghost" data-act="vote-undo" id="vote-undo">Undo</button>
+  </header>
+
+  <div class="deck" id="deck" aria-live="polite"></div>
+
+  <footer class="vote-foot">
+    <button class="vote-btn no" data-act="vote-no" aria-label="Pass">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg>
+    </button>
+    <p class="vote-hint" id="vote-hint"></p>
+    <button class="vote-btn yes" data-act="vote-yes" aria-label="Happy to eat this">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 6L9 17l-5-5"/></svg>
+    </button>
+  </footer>
+</div>
+
 <div class="sheet-host" id="sheet-host" hidden>
   <div class="sheet-scrim" data-close></div>
   <section class="sheet" role="dialog" aria-modal="true" aria-labelledby="sheet-title">
